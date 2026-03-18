@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DocQuery favicon">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bg)"/>
+  <path d="M22 16h16l8 8v24a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4z" fill="#fff" opacity="0.95"/>
+  <path d="M38 16v8h8" fill="none" stroke="#bfdbfe" stroke-width="2"/>
+  <circle cx="30" cy="37" r="7" fill="none" stroke="#1d4ed8" stroke-width="3"/>
+  <path d="M35.5 42.5L41 48" stroke="#1d4ed8" stroke-width="3" stroke-linecap="round"/>
+</svg>

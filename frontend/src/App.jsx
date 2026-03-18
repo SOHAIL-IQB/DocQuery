@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { PublicRoute, ProtectedRoute } from './components/layout/RouteGuards';
 import AppLayout from './components/layout/AppLayout';
@@ -8,6 +8,32 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
+
+const APP_NAME = 'DocQuery AI';
+
+const RouteMeta = () => {
+  const { pathname } = useLocation();
+
+  React.useEffect(() => {
+    let title = APP_NAME;
+
+    if (pathname === '/' || pathname === '/login') {
+      title = `Login | ${APP_NAME}`;
+    } else if (pathname === '/signup' || pathname === '/register') {
+      title = `Create Account | ${APP_NAME}`;
+    } else if (pathname === '/dashboard') {
+      title = `Dashboard | ${APP_NAME}`;
+    } else if (pathname.startsWith('/chat')) {
+      title = `Chat Workspace | ${APP_NAME}`;
+    } else if (pathname === '/settings') {
+      title = `Settings | ${APP_NAME}`;
+    }
+
+    document.title = title;
+  }, [pathname]);
+
+  return null;
+};
 
 
 class ErrorBoundary extends React.Component {
@@ -41,6 +67,7 @@ function App() {
     <ErrorBoundary>
       <AuthProvider>
         <BrowserRouter>
+          <RouteMeta />
           <Routes>
             {/* Public Routes (Only accessible if NOT logged in) */}
             <Route element={<PublicRoute />}>
