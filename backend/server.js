@@ -16,7 +16,8 @@ app.use(cors({
   origin: [
     "http://localhost:5173",
     "http://localhost:5174",
-    "https://doc-querry.vercel.app"
+    "https://doc-querry.vercel.app",
+    "https://docqueryai.vercel.app"
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],

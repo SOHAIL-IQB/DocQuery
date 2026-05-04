@@ -22,6 +22,14 @@ const registerUser = async (req, res) => {
     });
 
     if (user) {
+      const token = generateToken(user._id);
+
+      res.cookie("token", token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "none"
+      });
+
       res.status(201).json({
         success: true,
         data: {
@@ -30,7 +38,7 @@ const registerUser = async (req, res) => {
           email: user.email,
           avatar: user.avatar,
           totalStorageUsed: user.totalStorageUsed,
-          token: generateToken(user._id),
+          token: token,
         }
       });
     } else {
@@ -52,6 +60,14 @@ const loginUser = async (req, res) => {
     const user = await User.findOne({ email }).select('+password');
 
     if (user && (await user.matchPassword(password))) {
+      const token = generateToken(user._id);
+
+      res.cookie("token", token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "none"
+      });
+
       res.json({
         success: true,
         data: {
@@ -60,7 +76,7 @@ const loginUser = async (req, res) => {
           email: user.email,
           avatar: user.avatar,
           totalStorageUsed: user.totalStorageUsed,
-          token: generateToken(user._id),
+          token: token,
         }
       });
     } else {
