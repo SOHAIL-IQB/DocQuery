@@ -1,296 +1,220 @@
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
-import { Layers, FileText, MessageSquare, HardDrive, Loader2, FileText as FileIcon, AlertCircle } from 'lucide-react';
-import ConfirmationModal from '../components/common/ConfirmationModal';
-import UploadZone from '../components/documents/UploadZone';
-import DocumentRow from '../components/documents/DocumentRow';
-import StorageMeter from '../components/documents/StorageMeter';
-import AvatarIcon from '../components/common/AvatarIcon';
-import './Dashboard.css';
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useOutletContext } from 'react-router-dom'
+import { AnimatePresence, motion } from 'motion/react'
+import { FileText, Layers, MessagesSquare, HardDrive, Search, Upload, SquarePen, ArrowRight, MessageCircle, Check } from 'lucide-react'
+import api from '@/lib/api'
+import { useAuth } from '@/context/AuthContext'
+import { useWorkspace, LIMITS } from '@/context/WorkspaceContext'
+import DocumentCard, { UploadingCard } from '@/components/documents/DocumentCard'
+import UploadDropzone from '@/components/documents/UploadDropzone'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn, formatBytes, timeAgo } from '@/lib/utils'
 
-const Dashboard = () => {
-  const { user } = useAuth();
-  const [analytics, setAnalytics] = useState(null);
-  const [documents, setDocuments] = useState([]);
-  const [loading, setLoading] = useState(true);
-  
-  // Document Upload State
-  const [isUploading, setIsUploading] = useState(false);
-  const [error, setError] = useState('');
+const FILTERS = ['All', 'Ready', 'Processing', 'Failed']
 
-  // Modal State for Documents
-  const [modalOpen, setModalOpen] = useState(false);
-  const [docToDelete, setDocToDelete] = useState(null);
+function Stat({ icon: Icon, label, value, hint, children, delay = 0 }) {
+  return (
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay, duration: 0.3 }}>
+      <Card className="h-full p-4 sm:p-5">
+        <div className="flex items-center justify-between text-muted-foreground">
+          <span className="text-[13px] font-medium">{label}</span>
+          <Icon className="size-4" />
+        </div>
+        <p className="mt-3 text-2xl font-semibold tracking-tight tabular-nums sm:text-[28px]">{value}</p>
+        {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+        {children}
+      </Card>
+    </motion.div>
+  )
+}
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        setLoading(true);
-        const [analyticsRes, docsRes] = await Promise.all([
-          api.get('/users/analytics'),
-          api.get('/documents')
-        ]);
-        
-        if (analyticsRes.data.success) {
-          setAnalytics(analyticsRes.data.data);
-        }
-        
-        if (docsRes.data.success) {
-          setDocuments(docsRes.data.data);
-        }
-
-      } catch (err) {
-        console.error('Failed to load dashboard data', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDashboardData();
-  }, []);
-
-  // Monitor Processing Status and Poll
-  useEffect(() => {
-    let pollInterval;
-    if (documents.some(doc => doc.status === 'Processing')) {
-      pollInterval = setInterval(async () => {
-        try {
-          const { data } = await api.get('/documents');
-          if (data.success) {
-            const newDocs = data.data;
-            const newlyReady = newDocs.filter(nDoc => 
-              nDoc.status === 'Ready' && 
-              documents.find(oDoc => oDoc._id === nDoc._id && oDoc.status === 'Processing')
-            );
-            
-            if (newlyReady.length > 0) {
-               alert("Document is ready for AI queries.");
-            }
-            
-            setDocuments(newDocs);
-          }
-        } catch (err) {
-          console.error("Failed to poll documents", err);
-        }
-      }, 5000);
-    }
-    return () => clearInterval(pollInterval);
-  }, [documents]);
-
-  const totalBytes = documents.reduce((acc, doc) => acc + (doc.fileSize || 0), 0);
-  const isStorageExceeded = totalBytes >= 50 * 1024 * 1024; // 50MB
-
-  const handleUpload = async (file) => {
-    setIsUploading(true);
-    setError('');
-    
-    const formData = new FormData();
-    formData.append('document', file);
-
-    try {
-      const { data } = await api.post('/documents/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      });
-      if (data.success) {
-        setDocuments(prev => [data.data, ...prev]);
-        setAnalytics(prev => ({
-          ...prev,
-          totalDocuments: (prev?.totalDocuments || 0) + 1,
-          storageUsedBytes: (prev?.storageUsedBytes || 0) + (data.data.fileSize || 0)
-        }));
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Upload failed.');
-      console.error(err);
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleRename = async (id, newName) => {
-    try {
-      const { data } = await api.put(`/documents/${id}`, { fileName: newName });
-      if (data.success) {
-        setDocuments(prev => prev.map(doc => doc._id === id ? { ...doc, fileName: data.data.fileName } : doc));
-      }
-    } catch (err) {
-      setError('Failed to rename document.');
-    }
-  };
-
-  const promptDelete = (doc) => {
-    setDocToDelete(doc);
-    setModalOpen(true);
-  };
-
-  const confirmDelete = async () => {
-    if (!docToDelete) return;
-    const docId = docToDelete._id;
-    const deletedSize = docToDelete.fileSize || 0;
-    
-    // Optimistic UI updates
-    setDocuments(prev => prev.filter(d => d._id !== docId));
-    setAnalytics(prev => ({
-      ...prev,
-      totalDocuments: Math.max(0, (prev?.totalDocuments || 0) - 1),
-      storageUsedBytes: Math.max(0, (prev?.storageUsedBytes || 0) - deletedSize)
-    }));
-    
-    setModalOpen(false);
-    setDocToDelete(null);
-
-    try {
-       await api.delete(`/documents/${docId}`);
-    } catch (err) {
-      console.error('Failed to delete document', err);
-      setError('Failed to delete document. Please refresh.');
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="dashboard-loading">
-        <Loader2 size={32} className="spin text-accent" />
-        <p>Loading workspace...</p>
+function Onboarding({ hasDocs, hasReady, hasChats }) {
+  const steps = [
+    { done: hasDocs, label: 'Upload a document', desc: 'PDF, Word, text or Markdown.' },
+    { done: hasReady, label: 'Let it index', desc: 'We split it into passages and embed them.' },
+    { done: hasChats, label: 'Ask your first question', desc: 'Get an answer with citations.' },
+  ]
+  if (steps.every((s) => s.done)) return null
+  return (
+    <Card className="overflow-hidden">
+      <div className="relative p-5 sm:p-6">
+        <div className="pointer-events-none absolute -top-24 -right-24 size-56 rounded-full bg-primary/15 blur-3xl" />
+        <h3 className="text-[15px] font-semibold tracking-tight">Get started</h3>
+        <p className="mt-1 text-sm text-muted-foreground">Three steps to your first grounded answer.</p>
+        <ol className="mt-5 space-y-4">
+          {steps.map((s, i) => (
+            <li key={s.label} className="flex gap-3">
+              <span
+                className={cn(
+                  'flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold',
+                  s.done ? 'border-transparent bg-success text-white' : 'text-muted-foreground',
+                )}
+              >
+                {s.done ? <Check className="size-3.5" strokeWidth={3} /> : i + 1}
+              </span>
+              <div>
+                <p className={cn('text-sm font-medium', s.done && 'text-muted-foreground line-through')}>{s.label}</p>
+                <p className="text-xs text-muted-foreground">{s.desc}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
       </div>
-    );
-  }
+    </Card>
+  )
+}
+
+export default function Dashboard() {
+  const { user } = useAuth()
+  const { openUpload } = useOutletContext()
+  const navigate = useNavigate()
+  const { documents, docsLoaded, uploads, chats, storageUsed } = useWorkspace()
+  const [stats, setStats] = useState(null)
+  const [filter, setFilter] = useState('All')
+  const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    api.get('/users/analytics').then(({ data }) => setStats(data.data)).catch(() => {})
+  }, [documents.length, chats.length])
+
+  const counts = useMemo(() => {
+    const c = { All: documents.length, Ready: 0, Processing: 0, Failed: 0 }
+    for (const d of documents) c[d.status] = (c[d.status] || 0) + 1
+    return c
+  }, [documents])
+
+  const visible = documents.filter(
+    (d) => (filter === 'All' || d.status === filter) && d.fileName.toLowerCase().includes(query.trim().toLowerCase()),
+  )
+
+  const storagePct = Math.min(100, (storageUsed / LIMITS.storageBytes) * 100)
+  const passages = documents.reduce((n, d) => n + (d.chunkCount || 0), 0)
+  const firstName = user?.name && user.name !== 'User' ? user.name.split(' ')[0] : null
+  // Accounts created in the last 30 minutes get "Welcome" instead of "Welcome back".
+  const [isNew] = useState(() => !!user?.createdAt && Date.now() - new Date(user.createdAt).getTime() < 30 * 60 * 1000)
 
   return (
-    <div className="dashboard-container fade-in">
-      <header className="dashboard-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div style={{ 
-            width: '48px', height: '48px', borderRadius: '12px', 
-            backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-color)', 
-            display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(59, 130, 246, 0.2)' 
-          }}>
-            <AvatarIcon avatarId={user?.avatar} size={24} />
-          </div>
+    <div className="h-full overflow-y-auto">
+      <div className="@container mx-auto max-w-6xl px-4 py-6 sm:px-8 sm:py-10">
+        {/* Header */}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1>Welcome back, {user?.name || 'User'}</h1>
-            <p style={{ margin: 0 }}>Here's an overview of your AI knowledge workspace today.</p>
+            <motion.h1 initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-semibold tracking-tight sm:text-3xl">
+              {`${isNew ? 'Welcome' : 'Welcome back'}${firstName ? `, ${firstName}` : ''}`}
+            </motion.h1>
+            <p className="mt-1.5 text-sm text-muted-foreground">Your private knowledge base. Upload documents, then ask anything.</p>
           </div>
-        </div>
-      </header>
-      
-      {error && (
-        <div className="global-error fade-in" style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#f87171', padding: '12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
-          <AlertCircle size={16} /> <span>{error}</span>
-        </div>
-      )}
-
-      {/* Analytics Main Widgets */}
-      <section className="metrics-grid">
-        <div className="metric-card">
-          <div className="metric-icon blue">
-            <FileText size={24} />
-          </div>
-          <div className="metric-info">
-            <span className="metric-label">Total Documents</span>
-            <span className="metric-value">{analytics?.totalDocuments || 0}</span>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={openUpload}><Upload /> Upload</Button>
+            <Button onClick={() => navigate('/chat')}><SquarePen /> New chat</Button>
           </div>
         </div>
 
-        <div className="metric-card">
-          <div className="metric-icon purple">
-            <Layers size={24} />
-          </div>
-          <div className="metric-info">
-            <span className="metric-label">Active Chats</span>
-            <span className="metric-value">{analytics?.totalChats || 0}</span>
-          </div>
+        {/* Stats */}
+        <div className="mt-8 grid grid-cols-2 gap-3 @3xl:grid-cols-4">
+          <Stat icon={FileText} label="Documents" value={documents.length} hint={`${counts.Ready} ready · ${LIMITS.documents - documents.length} slots left`} />
+          <Stat icon={Layers} label="Indexed passages" value={passages.toLocaleString()} hint="Searchable by meaning" delay={0.04} />
+          <Stat icon={MessagesSquare} label="Questions asked" value={stats ? stats.questionsAsked.toLocaleString() : '—'} hint={`across ${chats.length} conversation${chats.length === 1 ? '' : 's'}`} delay={0.08} />
+          <Stat icon={HardDrive} label="Storage" value={formatBytes(storageUsed)} delay={0.12}>
+            <Progress value={storagePct} className="mt-3" indicatorClassName={storagePct > 90 ? 'bg-destructive' : storagePct > 75 ? 'bg-warning' : undefined} />
+            <p className="mt-1.5 text-xs text-muted-foreground">{Math.round(storagePct)}% of 50 MB</p>
+          </Stat>
         </div>
 
-        <div className="metric-card storage-card">
-          <StorageMeter totalUsedBytes={totalBytes} />
-        </div>
-      </section>
+        <div className="mt-8 grid grid-cols-1 gap-6 @4xl:grid-cols-[minmax(0,1fr)_300px]">
+          {/* Library */}
+          <section className="@container min-w-0">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="text-lg font-semibold tracking-tight">Library</h2>
+              {documents.length > 0 && (
+                <div className="relative sm:w-64">
+                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documents" className="h-9 pl-9" />
+                </div>
+              )}
+            </div>
 
-      {/* Main Layout Area */}
-      <div className="dashboard-content-grid">
-        {/* Document Library Panel */}
-        <div className="dashboard-panel">
-          <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3>Document Library</h3>
-            <span className="doc-count" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{documents.length} File{documents.length !== 1 ? 's' : ''}</span>
-          </div>
-          <div className="panel-body">
-             {documents.length === 0 && !isUploading ? (
-              <div className="empty-state-small" style={{ padding: '48px 24px' }}>
-                <FileIcon size={32} style={{ opacity: 0.5, marginBottom: '8px' }} />
-                <p>No documents uploaded yet</p>
-                <div style={{ fontSize: '0.85rem', marginTop: '4px' }}>Upload a document in the panel to get started.</div>
-              </div>
-            ) : (
-              <div className="documents-list-section">
-                 <div className="docs-grid">
-                    {documents.map(doc => (
-                      <DocumentRow 
-                        key={doc._id} 
-                        document={doc} 
-                        onDelete={promptDelete}
-                        onRename={handleRename}
-                      />
-                    ))}
-                 </div>
+            {documents.length > 0 && (
+              <div className="mt-3 flex gap-1 overflow-x-auto">
+                {FILTERS.filter((f) => f === 'All' || counts[f]).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setFilter(f)}
+                    className={cn(
+                      'relative h-8 rounded-full px-3 text-[13px] font-medium transition-colors',
+                      filter === f ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {filter === f && <motion.span layoutId="filter-pill" className="absolute inset-0 rounded-full bg-secondary" transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }} />}
+                    <span className="relative">{f} <span className="text-muted-foreground tabular-nums">{counts[f]}</span></span>
+                  </button>
+                ))}
               </div>
             )}
-          </div>
-        </div>
 
-        {/* Quick Actions Panel */}
-        <div className="dashboard-panel">
-          <div className="panel-header">
-            <h3>Quick Actions</h3>
-          </div>
-          <div className="panel-body actions-body">
-            
-            <div className="quick-action-block">
-               <h4 className="section-subtitle">Add Knowledge to Workspace</h4>
-               <UploadZone 
-                 onUpload={handleUpload} 
-                 isUploading={isUploading} 
-                 disabled={isStorageExceeded} 
-               />
-               {isStorageExceeded && (
-                 <div className="storage-warning" style={{ fontSize: '0.75rem', color: '#f59e0b', marginTop: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                   <AlertCircle size={12} /> Storage limit reached.
-                 </div>
-               )}
+            <div className="mt-4">
+              {!docsLoaded ? (
+                <div className="grid grid-cols-1 gap-3 @lg:grid-cols-2">
+                  {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-40 rounded-2xl" />)}
+                </div>
+              ) : documents.length === 0 && uploads.length === 0 ? (
+                <UploadDropzone />
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 gap-3 @lg:grid-cols-2">
+                    <AnimatePresence mode="popLayout">
+                      {uploads.map((u) => <UploadingCard key={u.id} upload={u} />)}
+                      {visible.map((d) => <DocumentCard key={d._id} doc={d} />)}
+                    </AnimatePresence>
+                  </div>
+                  {visible.length === 0 && uploads.length === 0 && (
+                    <p className="py-12 text-center text-sm text-muted-foreground">No documents match your search.</p>
+                  )}
+                  <div className="mt-3">
+                    <UploadDropzone compact disabled={documents.length >= LIMITS.documents || storageUsed >= LIMITS.storageBytes} />
+                  </div>
+                </>
+              )}
             </div>
+          </section>
 
-            <div className="quick-action-block" style={{ marginTop: 'auto' }}>
-               <h4 className="section-subtitle">Start Conversation</h4>
-               <Link to="/chat" className="action-card">
-                 <div className="action-icon">
-                   <MessageSquare size={20} />
-                 </div>
-                 <div className="action-text">
-                   <h4>New AI Chat</h4>
-                   <p>Query your document library</p>
-                 </div>
-               </Link>
-            </div>
-          </div>
+          {/* Side column */}
+          <aside className="grid min-w-0 grid-cols-1 content-start gap-6 @2xl:grid-cols-2 @4xl:grid-cols-1">
+            <Onboarding hasDocs={documents.length > 0} hasReady={counts.Ready > 0} hasChats={(stats?.questionsAsked || 0) > 0} />
+
+            <Card>
+              <div className="flex items-center justify-between p-5 pb-3">
+                <h3 className="text-[15px] font-semibold tracking-tight">Recent conversations</h3>
+                {chats.length > 0 && <Link to="/chat" className="text-xs font-medium text-primary hover:underline">New</Link>}
+              </div>
+              {chats.length === 0 ? (
+                <div className="px-5 pb-5">
+                  <p className="text-sm text-muted-foreground">No conversations yet.</p>
+                  <Button variant="secondary" size="sm" className="mt-3" onClick={() => navigate('/chat')}>
+                    Start a conversation <ArrowRight />
+                  </Button>
+                </div>
+              ) : (
+                <ul className="px-2 pb-2">
+                  {chats.slice(0, 6).map((c) => (
+                    <li key={c._id}>
+                      <Link to={`/chat/${c._id}`} className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-accent">
+                        <MessageCircle className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(c.updatedAt || c.createdAt)}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </aside>
         </div>
       </div>
-
-      <ConfirmationModal 
-        isOpen={modalOpen}
-        title="Delete Document"
-        message={`Are you sure you want to delete "${docToDelete?.fileName}"? This action cannot be undone and will permanently remove it from the chat context.`}
-        confirmText="Delete Document"
-        isDestructive={true}
-        onCancel={() => setModalOpen(false)}
-        onConfirm={confirmDelete}
-      />
     </div>
-  );
-};
-
-export default Dashboard;
+  )
+}

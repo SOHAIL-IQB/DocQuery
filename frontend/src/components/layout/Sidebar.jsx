@@ -1,245 +1,296 @@
-import React, { useState, useEffect } from 'react';
-import { NavLink, Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessageSquare, Settings, LogOut, PanelLeftClose, PanelLeftOpen, Plus, Edit2, Trash2, Check, X, Bot } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
-import ConfirmationModal from '../common/ConfirmationModal';
-import api from '../../services/api';
-import './Sidebar.css';
+import { useMemo, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import {
+  LayoutGrid, MessageSquareText, Settings, LogOut, PanelLeft, SquarePen, Search,
+  MoreHorizontal, Pencil, Trash2, Moon, Sun, ChevronsUpDown,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { useAuth } from '@/context/AuthContext'
+import { useTheme } from '@/context/ThemeContext'
+import { useWorkspace, LIMITS } from '@/context/WorkspaceContext'
+import { Logo, LogoMark } from '@/components/brand/Logo'
+import AvatarIcon from '@/components/common/AvatarIcon'
+import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
+import { Tooltip } from '@/components/ui/tooltip'
+import { Progress } from '@/components/ui/progress'
+import { ConfirmDialog } from '@/components/ui/alert-dialog'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { cn, formatBytes, isMac } from '@/lib/utils'
 
-const Sidebar = () => {
-  const { user, logout } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
-  
-  // Persist sidebar state using localStorage
-  const [collapsed, setCollapsed] = useState(() => {
-    const savedState = localStorage.getItem('docuquery_sidebar_collapsed');
-    return savedState ? JSON.parse(savedState) : false;
-  });
-  
-  // Sync collapse state changes back to localStorage
-  useEffect(() => {
-    localStorage.setItem('docuquery_sidebar_collapsed', JSON.stringify(collapsed));
-  }, [collapsed]);
-  
-  const [chats, setChats] = useState([]);
-  
-  const [editingChatId, setEditingChatId] = useState(null);
-  const [editTitle, setEditTitle] = useState('');
-  
-  const [modalOpen, setModalOpen] = useState(false);
-  const [chatToDelete, setChatToDelete] = useState(null);
+const NAV = [
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutGrid },
+  { to: '/chat', label: 'Ask AI', icon: MessageSquareText, match: '/chat' },
+  { to: '/settings', label: 'Settings', icon: Settings },
+]
 
-  const fetchChats = async () => {
-    try {
-      const { data } = await api.get('/chat');
-      if (data.success) {
-        setChats(data.data);
-      }
-    } catch (err) {
-      console.error('Failed to load chats:', err);
-    }
-  };
+function groupChats(chats) {
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const day = 86400000
+  const groups = { Today: [], Yesterday: [], 'Previous 7 days': [], Older: [] }
+  for (const c of chats) {
+    const t = new Date(c.updatedAt || c.createdAt).getTime()
+    if (t >= startOfToday) groups.Today.push(c)
+    else if (t >= startOfToday - day) groups.Yesterday.push(c)
+    else if (t >= startOfToday - 7 * day) groups['Previous 7 days'].push(c)
+    else groups.Older.push(c)
+  }
+  return Object.entries(groups).filter(([, list]) => list.length)
+}
 
-  useEffect(() => {
-    fetchChats();
-    
-    // Listen for custom events to sync chats across components
-    const handleChatsChanged = () => fetchChats();
-    window.addEventListener('chats-changed', handleChatsChanged);
-    return () => window.removeEventListener('chats-changed', handleChatsChanged);
-  }, []);
+function ChatItem({ chat, active, onNavigate }) {
+  const { renameChat, deleteChat } = useWorkspace()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(chat.title)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const createNewChat = async (e) => {
-    e.preventDefault();
-    try {
-      const { data } = await api.post('/chat/create', { title: 'New Conversation' });
-      if (data.success) {
-        navigate(`/chat/${data.data._id}`);
-        fetchChats();
-        window.dispatchEvent(new Event('chats-changed'));
-      }
-    } catch (err) {
-      console.error('Failed to create new chat:', err);
-    }
-  };
+  const commit = () => {
+    setEditing(false)
+    if (title.trim() && title.trim() !== chat.title) renameChat(chat._id, title)
+    else setTitle(chat.title)
+  }
 
-  const startRename = (e, chat) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setEditingChatId(chat._id);
-    setEditTitle(chat.title || 'Conversation');
-  };
-
-  const cancelRename = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setEditingChatId(null);
-    setEditTitle('');
-  };
-
-  const saveRename = async (e, id) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!editTitle.trim()) {
-      cancelRename(e);
-      return;
-    }
-    const updatedTitle = editTitle.trim();
-    // Optimistic UI update
-    setChats(prev => prev.map(c => c._id === id ? { ...c, title: updatedTitle } : c));
-    setEditingChatId(null);
-
-    try {
-      await api.patch(`/chat/${id}/rename`, { title: updatedTitle });
-      window.dispatchEvent(new Event('chats-changed'));
-    } catch (err) {
-      console.error('Failed to rename chat:', err);
-      fetchChats(); // Revert
-    }
-  };
-
-  const promptDelete = (e, chat) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setChatToDelete(chat);
-    setModalOpen(true);
-  };
-
-  const confirmDelete = async () => {
-    if (!chatToDelete) return;
-    const delId = chatToDelete._id;
-    
-    // Optimistic UI update
-    setChats(prev => prev.filter(c => c._id !== delId));
-    setModalOpen(false);
-    setChatToDelete(null);
-
-    try {
-      await api.delete(`/chat/${delId}`);
-      window.dispatchEvent(new Event('chats-changed'));
-      if (location.pathname === `/chat/${delId}`) {
-        navigate('/chat');
-      }
-    } catch (err) {
-      console.error('Failed to delete chat:', err);
-      fetchChats(); // Revert
-    }
-  };
-
-  // Check if we are anywhere inside the chat module
-  const isChatActive = location.pathname.startsWith('/chat');
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          if (e.key === 'Escape') { setTitle(chat.title); setEditing(false) }
+        }}
+        className="h-8 w-full rounded-md border border-primary/50 bg-background px-2 text-[13px] outline-none ring-4 ring-ring/15"
+      />
+    )
+  }
 
   return (
-    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-header">
-        <div className="logo-placeholder" title="DocuQuery AI">
-          <Bot size={18} color="white" />
-        </div>
-        {!collapsed && <h2>DocuQuery AI</h2>}
-        <button className="toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
-          {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+    <div className={cn('group/item relative flex items-center rounded-md transition-colors', active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60')}>
+      <NavLink
+        to={`/chat/${chat._id}`}
+        onClick={onNavigate}
+        className={cn('flex h-8 min-w-0 flex-1 items-center px-2 text-[13px]', active ? 'font-medium' : 'text-muted-foreground group-hover/item:text-foreground')}
+        title={chat.title}
+      >
+        <span className="truncate">{chat.title || 'Untitled'}</span>
+      </NavLink>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className={cn(
+              'mr-1 flex size-6 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-background/80 hover:text-foreground group-hover/item:opacity-100 data-[state=open]:opacity-100 max-md:opacity-100',
+              active && 'opacity-100',
+            )}
+            aria-label="Chat actions"
+          >
+            <MoreHorizontal className="size-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-40">
+          <DropdownMenuItem onSelect={() => { setTitle(chat.title); setEditing(true) }}>
+            <Pencil /> Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => setConfirmOpen(true)}>
+            <Trash2 /> Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Delete conversation?"
+        description={<>“{chat.title}” and all of its messages will be permanently deleted.</>}
+        confirmText="Delete"
+        onConfirm={async () => {
+          await deleteChat(chat._id)
+          if (active) navigate('/chat')
+        }}
+      />
+    </div>
+  )
+}
+
+function UserMenu({ collapsed }) {
+  const { user, logout } = useAuth()
+  const { resolved, toggle } = useTheme()
+  const navigate = useNavigate()
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-lg p-1.5 text-left transition-colors hover:bg-accent data-[state=open]:bg-accent',
+            collapsed && 'justify-center',
+          )}
+        >
+          <AvatarIcon avatarId={user?.avatar} className="size-8" />
+          {!collapsed && (
+            <>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium">{user?.name || 'User'}</span>
+                <span className="block truncate text-xs text-muted-foreground">{user?.email}</span>
+              </span>
+              <ChevronsUpDown className="size-4 text-muted-foreground" />
+            </>
+          )}
         </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side={collapsed ? 'right' : 'top'} align={collapsed ? 'end' : 'start'} className="w-60">
+        <DropdownMenuLabel className="font-normal">
+          <span className="block truncate text-sm font-medium text-foreground">{user?.name}</span>
+          <span className="block truncate">{user?.email}</span>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => navigate('/settings')}>
+          <Settings /> Settings
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); toggle() }}>
+          {resolved === 'dark' ? <Sun /> : <Moon />} {resolved === 'dark' ? 'Light mode' : 'Dark mode'}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={() => {
+            logout()
+            toast('Signed out', { description: 'See you soon.' })
+            navigate('/login')
+          }}
+        >
+          <LogOut /> Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+export function SidebarContent({ collapsed = false, onToggle, onNavigate, onOpenCommand }) {
+  const { chats, chatsLoaded, storageUsed } = useWorkspace()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const grouped = useMemo(() => groupChats(chats), [chats])
+  const storagePct = Math.min(100, (storageUsed / LIMITS.storageBytes) * 100)
+
+  const newChat = () => {
+    onNavigate?.()
+    navigate('/chat')
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className={cn('flex h-14 shrink-0 items-center gap-2 px-3', collapsed ? 'justify-center' : 'justify-between')}>
+        {collapsed ? (
+          <Tooltip content="Expand sidebar" side="right">
+            <button onClick={onToggle} className="group/logo relative" aria-label="Expand sidebar">
+              <LogoMark className="transition-opacity group-hover/logo:opacity-0" />
+              <PanelLeft className="absolute inset-0 m-auto size-4 opacity-0 transition-opacity group-hover/logo:opacity-100" />
+            </button>
+          </Tooltip>
+        ) : (
+          <>
+            <NavLink to="/dashboard" onClick={onNavigate} className="rounded-md px-1">
+              <Logo />
+            </NavLink>
+            {onToggle && (
+              <Tooltip content="Collapse sidebar" side="right">
+                <Button variant="ghost" size="icon-sm" onClick={onToggle} className="text-muted-foreground" aria-label="Collapse sidebar">
+                  <PanelLeft />
+                </Button>
+              </Tooltip>
+            )}
+          </>
+        )}
       </div>
 
-      <nav className="sidebar-nav">
-        <div className="nav-section">
-          {!collapsed && <p className="nav-label">WORKSPACE</p>}
-          
-          <NavLink to="/dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title="Dashboard">
-            <LayoutDashboard size={20} />
-            {!collapsed && <span>Dashboard</span>}
-          </NavLink>
-          
-          <NavLink to="/chat" className={`nav-item ${isChatActive ? 'active' : ''}`} title="Chat">
-            <MessageSquare size={20} />
-            {!collapsed && <span>Chat</span>}
-          </NavLink>
-          
-          {/* Internal Chat History Section */}
-          {isChatActive && !collapsed && (
-            <div className="sidebar-history-section">
-              <button className="new-chat-btn-small" onClick={createNewChat}>
-                <Plus size={14} /> New Chat
-              </button>
-              
-              <div className="sidebar-chat-list">
-                {chats.map(chat => {
-                  const isActiveChat = location.pathname === `/chat/${chat._id}`;
-                  return (
-                    <NavLink 
-                      to={`/chat/${chat._id}`} 
-                      key={chat._id} 
-                      className={`sidebar-chat-item ${isActiveChat ? 'active' : ''}`}
-                    >
-                      {editingChatId === chat._id ? (
-                        <div className="sidebar-rename-form" onClick={(e) => e.preventDefault()}>
-                           <input 
-                             type="text"
-                             className="sidebar-rename-input"
-                             value={editTitle}
-                             onChange={e => setEditTitle(e.target.value)}
-                             onClick={e => e.preventDefault()}
-                             autoFocus
-                             onKeyDown={e => {
-                               if (e.key === 'Enter') saveRename(e, chat._id);
-                               if (e.key === 'Escape') cancelRename(e);
-                             }}
-                           />
-                           <button className="icon-btn success" onClick={(e) => saveRename(e, chat._id)} title="Save">
-                             <Check size={14} />
-                           </button>
-                           <button className="icon-btn cancel" onClick={cancelRename} title="Cancel">
-                             <X size={14} />
-                           </button>
-                        </div>
-                      ) : (
-                        <span className="sidebar-chat-title">{chat.title || 'Conversation'}</span>
-                      )}
-                      
-                      {editingChatId !== chat._id && (
-                        <div className="sidebar-chat-actions">
-                          <button className="action-icon-btn" onClick={(e) => startRename(e, chat)} title="Rename">
-                            <Edit2 size={12} />
-                          </button>
-                          <button className="action-icon-btn delete" onClick={(e) => promptDelete(e, chat)} title="Delete">
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      )}
-                    </NavLink>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+      <div className={cn('flex flex-col gap-1 px-3 pt-1 pb-3', collapsed && 'items-center px-2')}>
+        {collapsed ? (
+          <>
+            <Tooltip content="New chat" side="right">
+              <Button variant="outline" size="icon" onClick={newChat} aria-label="New chat"><SquarePen /></Button>
+            </Tooltip>
+            <Tooltip content={`Search  ${isMac ? '⌘' : 'Ctrl'} K`} side="right">
+              <Button variant="ghost" size="icon" onClick={onOpenCommand} aria-label="Search"><Search /></Button>
+            </Tooltip>
+          </>
+        ) : (
+          <>
+            <Button variant="outline" className="h-9 justify-start gap-2 px-2.5 font-medium" onClick={newChat}>
+              <SquarePen /> New chat
+            </Button>
+            <button
+              onClick={onOpenCommand}
+              className="flex h-9 items-center gap-2 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Search className="size-4" />
+              <span className="flex-1 text-left">Search</span>
+              <span className="flex gap-0.5"><Kbd>{isMac ? '⌘' : 'Ctrl'}</Kbd><Kbd>K</Kbd></span>
+            </button>
+          </>
+        )}
+      </div>
+
+      <nav className={cn('flex flex-col gap-0.5 px-3', collapsed && 'items-center px-2')}>
+        {NAV.map(({ to, label, icon: Icon, match }) => {
+          const active = match ? location.pathname.startsWith(match) : location.pathname === to
+          const link = (
+            <NavLink
+              key={to}
+              to={to}
+              onClick={onNavigate}
+              className={cn(
+                'relative flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-sm transition-colors',
+                collapsed && 'size-9 justify-center px-0',
+                active ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+              )}
+            >
+              <Icon className="size-4 shrink-0" />
+              {!collapsed && label}
+            </NavLink>
+          )
+          return collapsed ? <Tooltip key={to} content={label} side="right">{link}</Tooltip> : link
+        })}
       </nav>
 
-      <div className="sidebar-spacer" />
-
-      <div className="sidebar-footer">
-        <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title="Settings">
-          <Settings size={20} />
-          {!collapsed && <span>Settings</span>}
-        </NavLink>
-        <button className="nav-item exit-item" onClick={logout} title="Logout">
-          <LogOut size={20} />
-          {!collapsed && <span>Logout</span>}
-        </button>
+      <div className={cn('mt-4 min-h-0 flex-1 overflow-y-auto px-3 pb-2', collapsed && 'invisible')}>
+        {!chatsLoaded ? (
+          <div className="space-y-2 px-2 pt-2">
+            {[70, 55, 80].map((w) => <div key={w} className="h-3 animate-pulse rounded bg-muted" style={{ width: `${w}%` }} />)}
+          </div>
+        ) : chats.length === 0 ? (
+          <p className="px-2.5 pt-2 text-xs leading-relaxed text-muted-foreground">
+            Your conversations will appear here.
+          </p>
+        ) : (
+          grouped.map(([label, list]) => (
+            <div key={label} className="mb-3">
+              <p className="sticky top-0 z-10 bg-sidebar px-2.5 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground/80">{label}</p>
+              <div className="flex flex-col gap-px">
+                {list.map((chat) => (
+                  <ChatItem key={chat._id} chat={chat} active={location.pathname === `/chat/${chat._id}`} onNavigate={onNavigate} />
+                ))}
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
-      <ConfirmationModal 
-        isOpen={modalOpen}
-        title="Delete Conversation"
-        message={`Are you sure you want to delete "${chatToDelete?.title}"?`}
-        confirmText="Delete Chat"
-        isDestructive={true}
-        onCancel={() => setModalOpen(false)}
-        onConfirm={confirmDelete}
-      />
-    </aside>
-  );
-};
-
-export default Sidebar;
+      <div className={cn('shrink-0 border-t p-3', collapsed && 'px-2')}>
+        {!collapsed && (
+          <NavLink to="/dashboard" onClick={onNavigate} className="mb-2 block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/60">
+            <div className="mb-1.5 flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Storage</span>
+              <span className="font-medium tabular-nums">{formatBytes(storageUsed)} <span className="text-muted-foreground">/ 50 MB</span></span>
+            </div>
+            <Progress value={storagePct} className="h-1" indicatorClassName={storagePct > 90 ? 'bg-destructive' : storagePct > 75 ? 'bg-warning' : undefined} />
+          </NavLink>
+        )}
+        <UserMenu collapsed={collapsed} />
+      </div>
+    </div>
+  )
+}

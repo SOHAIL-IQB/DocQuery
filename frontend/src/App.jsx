@@ -1,99 +1,98 @@
-import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
-import { PublicRoute, ProtectedRoute } from './components/layout/RouteGuards';
-import AppLayout from './components/layout/AppLayout';
-import ChatWorkspace from './pages/ChatWorkspace';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import Dashboard from './pages/Dashboard';
-import Settings from './pages/Settings';
+import { Component, useEffect } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Toaster } from 'sonner'
+import { AuthProvider } from '@/context/AuthContext'
+import { ThemeProvider, useTheme } from '@/context/ThemeContext'
+import { ProtectedRoute, PublicOnlyRoute } from '@/components/layout/RouteGuards'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { Button } from '@/components/ui/button'
+import AppLayout from '@/components/layout/AppLayout'
+import Landing from '@/pages/Landing'
+import Auth from '@/pages/Auth'
+import Dashboard from '@/pages/Dashboard'
+import Chat from '@/pages/Chat'
+import Settings from '@/pages/Settings'
+import NotFound from '@/pages/NotFound'
 
-const APP_NAME = 'DocQuery AI';
+const APP_NAME = 'DocQuery AI'
+const TITLES = {
+  '/': `${APP_NAME} — Ask your documents anything`,
+  '/login': `Sign in · ${APP_NAME}`,
+  '/signup': `Create account · ${APP_NAME}`,
+  '/dashboard': `Dashboard · ${APP_NAME}`,
+  '/settings': `Settings · ${APP_NAME}`,
+}
 
-const RouteMeta = () => {
-  const { pathname } = useLocation();
+function RouteMeta() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    document.title = pathname.startsWith('/chat') ? `Chat · ${APP_NAME}` : TITLES[pathname] || APP_NAME
+  }, [pathname])
+  return null
+}
 
-  React.useEffect(() => {
-    let title = APP_NAME;
-
-    if (pathname === '/' || pathname === '/login') {
-      title = `Login | ${APP_NAME}`;
-    } else if (pathname === '/signup' || pathname === '/register') {
-      title = `Create Account | ${APP_NAME}`;
-    } else if (pathname === '/dashboard') {
-      title = `Dashboard | ${APP_NAME}`;
-    } else if (pathname.startsWith('/chat')) {
-      title = `Chat Workspace | ${APP_NAME}`;
-    } else if (pathname === '/settings') {
-      title = `Settings | ${APP_NAME}`;
-    }
-
-    document.title = title;
-  }, [pathname]);
-
-  return null;
-};
-
-
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
-  }
+class ErrorBoundary extends Component {
+  state = { error: null }
   static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+    return { error }
   }
-  componentDidCatch(error, errorInfo) {
-    console.error("ErrorBoundary caught an error", error, errorInfo);
-    this.setState({ errorInfo });
+  componentDidCatch(error, info) {
+    console.error('Unhandled UI error', error, info)
   }
   render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: "40px", backgroundColor: "#fff", color: "#000", zIndex: 99999 }}>
-          <h2>Application Crashed</h2>
-          <pre>{this.state.error?.toString()}</pre>
-          <pre style={{ fontSize: "12px", whiteSpace: "pre-wrap" }}>{this.state.errorInfo?.componentStack}</pre>
-        </div>
-      );
-    }
-    return this.props.children;
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
+        <h1 className="text-xl font-semibold tracking-tight">Something went wrong</h1>
+        <p className="max-w-md text-sm text-muted-foreground">An unexpected error occurred. Reloading usually fixes it.</p>
+        <pre className="max-w-lg overflow-auto rounded-lg bg-muted px-3 py-2 text-left text-xs text-muted-foreground">{String(this.state.error)}</pre>
+        <Button onClick={() => window.location.reload()}>Reload</Button>
+      </div>
+    )
   }
 }
 
-function App() {
+function ThemedToaster() {
+  const { resolved } = useTheme()
   return (
-    <ErrorBoundary>
-      <AuthProvider>
-        <BrowserRouter>
-          <RouteMeta />
-          <Routes>
-            {/* Public Routes (Only accessible if NOT logged in) */}
-            <Route element={<PublicRoute />}>
-              <Route path="/" element={<Login />} />
-              <Route path="/login" element={<Navigate to="/" replace />} />
-              <Route path="/signup" element={<Register />} />
-              <Route path="/register" element={<Navigate to="/signup" replace />} />
-            </Route>
-
-            {/* Protected Application Routes wrapped in AppLayout */}
-            <Route element={<ProtectedRoute />}>
-              <Route element={<AppLayout />}>
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="/chat" element={<ChatWorkspace />} />
-                <Route path="/chat/:chatId" element={<ChatWorkspace />} />
-              </Route>
-            </Route>
-
-            {/* Fallback */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
-    </ErrorBoundary>
-  );
+    <Toaster
+      theme={resolved}
+      position="bottom-right"
+      toastOptions={{ classNames: { toast: '!rounded-xl !border-border !bg-popover !text-popover-foreground !shadow-xl', description: '!text-muted-foreground' } }}
+    />
+  )
 }
 
-export default App;
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <ThemeProvider>
+        <AuthProvider>
+          <TooltipProvider>
+            <BrowserRouter>
+              <RouteMeta />
+              <Routes>
+                <Route path="/" element={<Landing />} />
+                <Route element={<PublicOnlyRoute />}>
+                  <Route path="/login" element={<Auth mode="login" />} />
+                  <Route path="/signup" element={<Auth mode="signup" />} />
+                  <Route path="/register" element={<Navigate to="/signup" replace />} />
+                </Route>
+                <Route element={<ProtectedRoute />}>
+                  <Route element={<AppLayout />}>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/chat" element={<Chat />} />
+                    <Route path="/chat/:chatId" element={<Chat />} />
+                    <Route path="/settings" element={<Settings />} />
+                  </Route>
+                </Route>
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </BrowserRouter>
+            <ThemedToaster />
+          </TooltipProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
+  )
+}
