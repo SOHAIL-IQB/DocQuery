@@ -1,112 +1,106 @@
 const Document = require('../models/Document');
+const DocumentChunk = require('../models/DocumentChunk');
 const Chat = require('../models/Chat');
+const Message = require('../models/Message');
 const User = require('../models/User');
+const { serializeUser } = require('./authController');
+const { getStorageUsed, MAX_TOTAL_STORAGE, MAX_DOCUMENTS } = require('../middleware/uploadMiddleware');
+
+const AVATARS = new Set(['avatar1', 'avatar2', 'avatar3', 'avatar4', 'avatar5', 'avatar6', 'avatar7', 'avatar8']);
 
 // @desc    Get dashboard analytics for user
-// @route   GET /api/user/analytics
+// @route   GET /api/users/analytics
 // @access  Private
-const getDashboardAnalytics = async (req, res) => {
+const getDashboardAnalytics = async (req, res, next) => {
   try {
     const userId = req.user._id;
+    const chatIds = await Chat.find({ userId }).distinct('_id');
 
-    // Run aggregations in parallel
-    const [documentCount, chatCount, userRecord] = await Promise.all([
-      Document.countDocuments({ userId }),
-      Chat.countDocuments({ userId }),
-      User.findById(userId).select('totalStorageUsed createdAt')
+    const [storage, readyDocuments, totalChunks, questionsAsked] = await Promise.all([
+      getStorageUsed(userId),
+      Document.countDocuments({ userId, status: 'Ready' }),
+      DocumentChunk.countDocuments({ userId }),
+      Message.countDocuments({ chatId: { $in: chatIds }, role: 'user' }),
     ]);
 
     res.json({
       success: true,
       data: {
-        totalDocuments: documentCount,
-        totalChats: chatCount,
-        storageUsedBytes: userRecord.totalStorageUsed || 0,
-        memberSince: userRecord.createdAt
-      }
+        totalDocuments: storage.count,
+        readyDocuments,
+        totalChats: chatIds.length,
+        totalChunks,
+        questionsAsked,
+        storageUsedBytes: storage.bytes,
+        storageLimitBytes: MAX_TOTAL_STORAGE,
+        documentLimit: MAX_DOCUMENTS,
+        memberSince: req.user.createdAt,
+      },
     });
-
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch analytics' });
+    next(error);
   }
 };
 
 // @desc    Update user profile & avatar
-// @route   PUT /api/user/profile
+// @route   PATCH /api/users/profile
 // @access  Private
-const updateProfile = async (req, res) => {
+const updateProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
-    }
-
-    user.name = req.body.name || user.name;
-    user.avatar = req.body.avatar || user.avatar;
-
-    const updatedUser = await user.save();
-
-    res.json({
-      success: true,
-      data: {
-        _id: updatedUser.id,
-        name: updatedUser.name,
-        email: updatedUser.email,
-        avatar: updatedUser.avatar,
-        totalStorageUsed: updatedUser.totalStorageUsed,
-      }
-    });
+    const name = typeof req.body.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
+    if (name) user.name = name;
+    if (AVATARS.has(req.body.avatar)) user.avatar = req.body.avatar;
+    await user.save();
+    res.json({ success: true, data: serializeUser(user) });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 };
 
 // @desc    Update user password
-// @route   PUT /api/user/password
+// @route   POST /api/users/change-password
 // @access  Private
-const updatePassword = async (req, res) => {
+const updatePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    // Explicitly select password field to check it
-    const user = await User.findById(req.user._id).select('+password');
-
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
+    if (typeof newPassword !== 'string' || newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: 'New password must be at least 6 characters.' });
     }
 
-    // Check current password
-    if (!(await user.matchPassword(currentPassword))) {
-      return res.status(401).json({ success: false, error: 'Current password is incorrect' });
+    const user = await User.findById(req.user._id).select('+password');
+    if (!(await user.matchPassword(String(currentPassword || '')))) {
+      return res.status(400).json({ success: false, error: 'Current password is incorrect.' });
     }
 
     user.password = newPassword;
     await user.save();
-
     res.json({ success: true, message: 'Password updated successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 };
 
-// @desc    Delete user account and all associated data
-// @route   DELETE /api/user/account
+// @desc    Delete user account and ALL associated data
+// @route   DELETE /api/users/account
 // @access  Private
-const deleteAccount = async (req, res) => {
+const deleteAccount = async (req, res, next) => {
   try {
     const userId = req.user._id;
+    const chatIds = await Chat.find({ userId }).distinct('_id');
 
-    // Delete all documents belonging to user
-    await Document.deleteMany({ userId });
-    
-    // Delete all chats belonging to user
-    await Chat.deleteMany({ userId });
-
-    // Delete user
+    await Promise.all([
+      Message.deleteMany({ chatId: { $in: chatIds } }),
+      DocumentChunk.deleteMany({ userId }),
+      Document.deleteMany({ userId }),
+      Chat.deleteMany({ userId }),
+    ]);
     await User.findByIdAndDelete(userId);
 
+    res.clearCookie('token');
     res.json({ success: true, message: 'Account deleted successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 };
 
@@ -114,5 +108,5 @@ module.exports = {
   getDashboardAnalytics,
   updateProfile,
   updatePassword,
-  deleteAccount
+  deleteAccount,
 };

@@ -5,12 +5,16 @@ const userSchema = new mongoose.Schema({
   name: {
     type: String,
     required: false,
-    default: 'User'
+    default: 'User',
+    trim: true,
+    maxlength: 50
   },
   email: {
     type: String,
     required: [true, 'Please provide an email'],
-    unique: true
+    unique: true,
+    trim: true,
+    lowercase: true
   },
   password: {
     type: String,

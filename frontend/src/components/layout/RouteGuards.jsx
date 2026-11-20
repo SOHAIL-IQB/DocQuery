@@ -1,30 +1,34 @@
-import React from 'react';
-import { Navigate, Outlet } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
-import { Loader2 } from 'lucide-react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { useAuth } from '@/context/AuthContext'
+import { LogoMark } from '@/components/brand/Logo'
 
-export const ProtectedRoute = () => {
-  const { user, loading } = useAuth();
+function Splash() {
+  return (
+    <div className="flex h-dvh items-center justify-center">
+      <LogoMark className="size-10 animate-pulse" />
+    </div>
+  )
+}
 
-  if (loading) return null;
+export function ProtectedRoute() {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading && !user) return <Splash />
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
+  return <Outlet />
+}
 
-  // If no user object, immediately bounce to login
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+export function PublicOnlyRoute() {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading && !user) return <Splash />
+  // After signing in, return to the page the user originally asked for.
+  if (user) return <Navigate to={safeRedirect(location.state?.from)} replace />
+  return <Outlet />
+}
 
-  return <Outlet />;
-};
-
-export const PublicRoute = () => {
-  const { user, loading } = useAuth();
-
-  if (loading) return null;
-
-  // If already authenticated, block access to Login/Register and bounce into the app
-  if (user) {
-    return <Navigate to="/dashboard" replace />;
-  }
-
-  return <Outlet />;
-};
+// Only allow in-app paths, never another origin.
+// eslint-disable-next-line react-refresh/only-export-components
+export function safeRedirect(path) {
+  return typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? path : '/dashboard'
+}
