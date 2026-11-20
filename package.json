@@ -1,13 +1,14 @@
 {
   "name": "docquery",
   "private": true,
-  "description": "DocQuery AI — chat with your documents using retrieval-augmented generation.",
+  "description": "DocQuery AI \u2014 chat with your documents using retrieval-augmented generation.",
   "scripts": {
     "setup": "npm install && npm --prefix backend install && npm --prefix frontend install",
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
     "build": "npm --prefix frontend run build",
     "lint": "npm --prefix frontend run lint",
-    "start": "npm --prefix backend start"
+    "start": "npm --prefix backend start",
+    "test": "npm --prefix backend test"
   },
   "devDependencies": {
     "concurrently": "^10.0.7"

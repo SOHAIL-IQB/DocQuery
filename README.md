@@ -2,7 +2,7 @@
 
 **Ask your documents anything.** Upload PDFs, Word files, text and Markdown — DocQuery finds the passages that matter and writes a clear, streamed answer with inline citations you can verify in one click.
 
-Built on a Retrieval-Augmented Generation (RAG) pipeline: local sentence embeddings for semantic search + Groq-hosted Llama for fast, grounded answers.
+Built on a Retrieval-Augmented Generation (RAG) pipeline: local sentence embeddings for semantic search + Groq-hosted open models for fast, grounded answers.
 
 ---
 
@@ -23,7 +23,7 @@ Built on a Retrieval-Augmented Generation (RAG) pipeline: local sentence embeddi
 | --- | --- |
 | Frontend | React 19, Vite 7, **Tailwind CSS v4**, **shadcn/ui-style components on Radix UI**, Motion, Sonner, cmdk, Lucide, Geist font |
 | Backend | Node.js, Express 5, Mongoose 9, JWT + bcrypt, Multer, Helmet, express-rate-limit |
-| AI | `Xenova/all-MiniLM-L6-v2` embeddings (runs locally on the server), Groq `llama-3.1-8b-instant` for generation |
+| AI | `Xenova/all-MiniLM-L6-v2` embeddings (runs locally on the server), Groq `openai/gpt-oss-120b` for generation (automatic fallback if a model is retired) |
 | Search | MongoDB Atlas `$vectorSearch` when available, automatic fallback to in-app cosine similarity |
 
 ## Quick start
@@ -44,7 +44,7 @@ With no `MONGO_URI` set, the backend starts a local MongoDB automatically (first
 
 ### Turn on AI answers
 
-Add a free Groq key to `backend/.env`:
+Add a free Groq key to `backend/.env` (on the same line as the variable name):
 
 ```env
 GROQ_API_KEY=gsk_...
@@ -60,7 +60,7 @@ Without a key the app still works end-to-end, but answers show the most relevant
 | `MONGO_URI` | *(empty → local DB)* | MongoDB connection string. **Required in production.** |
 | `JWT_SECRET` | dev secret | **Required in production.** Long random string. |
 | `GROQ_API_KEY` | — | Enables AI-written answers, summaries and suggested questions |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Any Groq chat model |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Any Groq chat model. If it is retired, the app falls back to `gpt-oss-120b` → `gpt-oss-20b` → `qwen3.8-27b`. |
 | `VECTOR_SEARCH` | `auto` | `auto`, `atlas` or `local` |
 | `CLIENT_URLS` | — | Extra comma-separated origins allowed by CORS |
 
@@ -128,6 +128,20 @@ frontend/src/
 └── pages/         # Landing, Auth, Dashboard, Chat, Settings
 ```
 
+## Testing
+
+```bash
+npm test
+```
+
+Runs 58 backend tests (Node's built-in test runner) against the real Express app, an in-memory MongoDB and the real embedding model — no network or API key needed. They cover:
+
+- **Auth** — validation, duplicate/racing sign-ups, case-insensitive login, expired/forged tokens, brute-force limiting
+- **Documents** — real PDF/DOCX/TXT/MD extraction, non-ASCII names, type/size/count/storage limits, isolation between users, cleanup when deleted mid-processing
+- **Chat** — SSE event order, persistence, scoping, cross-user isolation, greetings, stop/abort, rate limiting
+- **Accounts** — analytics, profile, password change, full cascade on account deletion
+- **Units** — chunking, text extraction (including a regression test for PDF parsing during model load), citation normalization
+
 ## Scripts
 
 | Command | What it does |
@@ -135,6 +149,7 @@ frontend/src/
 | `npm run setup` | Install all dependencies |
 | `npm run dev` | Run API and web app together |
 | `npm run build` | Production build of the frontend |
+| `npm test` | Run the backend test suite |
 | `npm run lint` | Lint the frontend |
 | `npm start` | Start the API in production mode |
 

@@ -155,38 +155,40 @@ const streamMessage = async (req, res, next) => {
     const history = await recordQuestion(chat, payload.question);
     send({ type: 'meta', chatTitle: chat.title });
 
-    if (isGreeting(payload.question)) {
-      answer = greetingAnswer(req.user);
-      send({ type: 'sources', sources: [] });
-      send({ type: 'token', value: answer });
-    } else {
-      const result = await streamAnswer({
-        userId: req.user._id,
-        question: payload.question,
-        documentIds: payload.documentIds,
-        history,
-        signal: controller.signal,
-        onSources: (s) => {
-          sources = s;
-          send({ type: 'sources', sources: s });
-        },
-        onToken: (t) => {
-          answer += t;
-          send({ type: 'token', value: t });
-        },
-      });
-      answer = result.answer || answer;
+    try {
+      if (isGreeting(payload.question)) {
+        answer = greetingAnswer(req.user);
+        send({ type: 'sources', sources: [] });
+        send({ type: 'token', value: answer });
+      } else {
+        const result = await streamAnswer({
+          userId: req.user._id,
+          question: payload.question,
+          documentIds: payload.documentIds,
+          history,
+          signal: controller.signal,
+          onSources: (s) => {
+            sources = s;
+            send({ type: 'sources', sources: s });
+          },
+          onToken: (t) => {
+            answer += t;
+            send({ type: 'token', value: t });
+          },
+        });
+        answer = result.answer || answer;
+      }
+    } catch (error) {
+      // A stop/disconnect can surface as an abort error from the LLM client — that's not a failure.
+      if (!controller.signal.aborted) throw error;
     }
 
     const stopped = controller.signal.aborted;
     let messageId;
-    if (answer.trim()) {
-      const saved = await Message.create({
-        chatId: chat._id,
-        role: 'assistant',
-        content: stopped ? `${answer.trim()}\n\n_— response stopped_` : answer.trim(),
-        sources,
-      });
+    if (answer.trim() || stopped) {
+      // Always record a stopped turn so the conversation reads the same after a reload.
+      const content = !answer.trim() ? '_Stopped._' : stopped ? `${answer.trim()}\n\n_— response stopped_` : answer.trim();
+      const saved = await Message.create({ chatId: chat._id, role: 'assistant', content, sources });
       messageId = saved._id;
     }
     send({ type: 'done', messageId, stopped });
@@ -257,7 +259,8 @@ const renameChat = async (req, res, next) => {
     const chat = await loadOwnedChat(req, res, req.params.chatId);
     if (!chat) return;
     chat.title = title.slice(0, 100);
-    await chat.save();
+    // Renaming is not conversation activity — don't bump the chat to the top of the list.
+    await chat.save({ timestamps: false });
     res.json({ success: true, data: chat });
   } catch (error) {
     next(error);

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 import { MoreHorizontal, Pencil, Trash2, MessageSquareText, AlertCircle, Loader2, Sparkles } from 'lucide-react'
@@ -43,6 +43,28 @@ export default function DocumentCard({ doc }) {
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [name, setName] = useState(doc.fileName)
+  // When a menu item opens a dialog, stop the menu from pulling focus back to its button.
+  const openingDialog = useRef(false)
+  const menuButton = useRef(null)
+  const nameInput = useRef(null)
+
+  // Select the file name (without its extension) when the rename dialog opens.
+  useEffect(() => {
+    if (!renameOpen) return
+    const id = setTimeout(() => {
+      const el = nameInput.current
+      if (!el) return
+      const dot = el.value.lastIndexOf('.')
+      el.focus()
+      el.setSelectionRange(0, dot > 0 ? dot : el.value.length)
+    }, 0)
+    return () => clearTimeout(id)
+  }, [renameOpen])
+
+  const returnFocus = (e) => {
+    e.preventDefault()
+    menuButton.current?.focus()
+  }
   const ready = doc.status === 'Ready'
   const processing = doc.status === 'Processing'
 
@@ -71,15 +93,22 @@ export default function DocumentCard({ doc }) {
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-xs" className="-mt-1 -mr-1 text-muted-foreground" aria-label="Document actions">
+            <Button ref={menuButton} variant="ghost" size="icon-xs" className="-mt-1 -mr-1 text-muted-foreground" aria-label="Document actions">
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuContent
+            align="end"
+            className="w-44"
+            onCloseAutoFocus={(e) => {
+              if (openingDialog.current) e.preventDefault()
+              openingDialog.current = false
+            }}
+          >
             {ready && <DropdownMenuItem onSelect={ask}><MessageSquareText /> Ask about this</DropdownMenuItem>}
-            <DropdownMenuItem onSelect={() => { setName(doc.fileName); setRenameOpen(true) }}><Pencil /> Rename</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => { openingDialog.current = true; setName(doc.fileName); setRenameOpen(true) }}><Pencil /> Rename</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}><Trash2 /> Delete</DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onSelect={() => { openingDialog.current = true; setDeleteOpen(true) }}><Trash2 /> Delete</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -116,7 +145,7 @@ export default function DocumentCard({ doc }) {
       )}
 
       <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
-        <DialogContent>
+        <DialogContent onCloseAutoFocus={returnFocus}>
           <form
             className="grid gap-4"
             onSubmit={(e) => {
@@ -126,10 +155,7 @@ export default function DocumentCard({ doc }) {
             }}
           >
             <DialogHeader><DialogTitle>Rename document</DialogTitle></DialogHeader>
-            <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={200} onFocus={(e) => {
-              const dot = e.target.value.lastIndexOf('.')
-              e.target.setSelectionRange(0, dot > 0 ? dot : e.target.value.length)
-            }} />
+            <Input ref={nameInput} value={name} onChange={(e) => setName(e.target.value)} maxLength={200} aria-label="Document name" />
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={!name.trim()}>Save</Button>
@@ -144,6 +170,7 @@ export default function DocumentCard({ doc }) {
         title="Delete document?"
         description={<>“{doc.fileName}” and its search index will be permanently removed. Past answers that cited it will keep their text.</>}
         confirmText="Delete document"
+        returnFocusRef={menuButton}
         onConfirm={() => deleteDocument(doc)}
       />
     </motion.div>

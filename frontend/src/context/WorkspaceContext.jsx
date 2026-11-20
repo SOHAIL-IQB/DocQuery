@@ -64,7 +64,7 @@ export function WorkspaceProvider({ children }) {
       const before = prevDocs.current.find((d) => d._id === doc._id)
       if (before?.status !== 'Processing') continue
       if (doc.status === 'Ready') {
-        toast.success(`${doc.fileName} is ready`, { description: `Indexed into ${doc.chunkCount} searchable passages.` })
+        toast.success(`${doc.fileName} is ready`, { description: `Indexed into ${doc.chunkCount} searchable passage${doc.chunkCount === 1 ? "" : "s"}.` })
       } else if (doc.status === 'Failed') {
         toast.error(`Couldn't process ${doc.fileName}`, { description: doc.error })
       }

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { safeRedirect } from '@/components/layout/RouteGuards'
 
 function PasswordInput({ id, value, onChange, autoComplete, disabled }) {
   const [show, setShow] = useState(false)
@@ -104,7 +105,7 @@ export default function Auth({ mode }) {
       const { data } = await api.post(isSignup ? '/auth/register' : '/auth/login', payload)
       login(data.data.token, data.data)
       toast.success(isSignup ? 'Welcome to DocQuery!' : `Welcome back${data.data.name && data.data.name !== 'User' ? `, ${data.data.name.split(' ')[0]}` : ''}`)
-      navigate(location.state?.from || '/dashboard', { replace: true })
+      navigate(safeRedirect(location.state?.from), { replace: true })
     } catch (err) {
       setError(errorMessage(err, isSignup ? 'Could not create your account.' : 'Invalid email or password.'))
     } finally {

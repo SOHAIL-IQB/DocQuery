@@ -1,4 +1,4 @@
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
 
 const MIME = {
@@ -28,9 +28,16 @@ const resolveMimeType = (mimetype = '', fileName = '') => {
 const extractText = async (buffer, mimetype) => {
   let text;
   switch (mimetype) {
-    case MIME.pdf:
-      text = (await pdfParse(buffer)).text;
+    case MIME.pdf: {
+      const parser = new PDFParse({ data: new Uint8Array(buffer) });
+      try {
+        // pageJoiner '' drops the "-- 1 of N --" page markers from the output.
+        text = (await parser.getText({ pageJoiner: '' })).text;
+      } finally {
+        await parser.destroy();
+      }
       break;
+    }
     case MIME.docx:
       text = (await mammoth.extractRawText({ buffer })).value;
       break;
@@ -44,7 +51,7 @@ const extractText = async (buffer, mimetype) => {
 
   text = (text || '').replace(/\u0000/g, '').trim();
   if (!text) {
-    throw new Error('No readable text found. Scanned/image-only PDFs are not supported yet.');
+    throw new Error('No readable text found in this file. (Scanned or image-only PDFs are not supported yet.)');
   }
   return text;
 };

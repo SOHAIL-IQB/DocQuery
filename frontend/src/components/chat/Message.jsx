@@ -10,12 +10,23 @@ import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
-function Sources({ sources, onOpen }) {
+// Numbers cited in the answer, e.g. [1] or 【2】 → Set{0, 1} (zero-based).
+function citedIndexes(content) {
+  const set = new Set()
+  for (const m of content.matchAll(/[[【](\d{1,2})(?:†[^\]】]*)?[\]】]/g)) set.add(Number(m[1]) - 1)
+  return set
+}
+
+function Sources({ sources, content, onOpen }) {
+  // Show only passages the answer actually cites; if it cites none, show them all.
+  const cited = citedIndexes(content)
+  const shown = sources.map((s, i) => ({ s, i })).filter(({ i }) => !cited.size || cited.has(i))
+  if (!shown.length) return null
   return (
     <div className="mt-4">
       <p className="mb-2 text-xs font-medium text-muted-foreground">Sources</p>
       <div className="grid gap-2 sm:grid-cols-2">
-        {sources.map((s, i) => (
+        {shown.map(({ s, i }) => (
           <button
             key={`${s.documentId}-${s.chunkIndex}-${i}`}
             onClick={() => onOpen(i)}
@@ -107,7 +118,7 @@ function Message({ message, userAvatar }) {
           </div>
         )}
 
-        {!streaming && sources.length > 0 && <Sources sources={sources} onOpen={setOpenSource} />}
+        {!streaming && sources.length > 0 && <Sources sources={sources} content={message.content} onOpen={setOpenSource} />}
 
         {!streaming && !message.error && message.content && (
           <div className="mt-2 flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/msg:opacity-100">

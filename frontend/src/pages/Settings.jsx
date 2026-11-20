@@ -201,7 +201,7 @@ function DangerSection() {
       await api.delete('/users/account')
       logout()
       toast.success('Your account has been deleted')
-      navigate('/')
+      navigate('/login', { replace: true })
     } catch (err) {
       toast.error('Could not delete account', { description: errorMessage(err) })
       setBusy(false)
