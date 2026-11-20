@@ -29,8 +29,14 @@ function greeting(name) {
 function EmptyState({ user, documents, uploads, onPick, onUpload }) {
   const ready = documents.filter((d) => d.status === 'Ready')
   const suggestions = useMemo(() => {
-    const fromDocs = ready.flatMap((d) => (d.suggestedQuestions || []).map((q) => ({ q, doc: d })))
-    return fromDocs.length ? fromDocs.slice(0, 4) : GENERIC_PROMPTS.map((q) => ({ q }))
+    // Take one AI-suggested question per recent document first (for variety), then fill to 4 with generic prompts.
+    const perDoc = ready.map((d) => (d.suggestedQuestions || []).map((q) => ({ q, doc: d })))
+    const picked = []
+    for (let round = 0; picked.length < 4 && perDoc.some((list) => list[round]); round++) {
+      for (const list of perDoc) if (list[round] && picked.length < 4) picked.push(list[round])
+    }
+    for (const q of GENERIC_PROMPTS) if (picked.length < 4) picked.push({ q })
+    return picked
   }, [ready])
 
   return (
@@ -89,7 +95,7 @@ export default function Chat() {
   const location = useLocation()
   const { openUpload } = useOutletContext()
   const { user } = useAuth()
-  const { documents, uploads, createChat, touchChat, chats } = useWorkspace()
+  const { documents, docsLoaded, uploads, createChat, touchChat, chats } = useWorkspace()
 
   const [messages, setMessages] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -112,8 +118,12 @@ export default function Chat() {
 
   // Drop documents from the scope once they're deleted.
   useEffect(() => {
-    setScope((s) => s.filter((id) => documents.some((d) => d._id === id)))
-  }, [documents])
+    if (!docsLoaded) return
+    setScope((s) => {
+      const next = s.filter((id) => documents.some((d) => d._id === id))
+      return next.length === s.length ? s : next
+    })
+  }, [documents, docsLoaded])
 
   // Load history when switching chats.
   useEffect(() => {
@@ -175,8 +185,8 @@ export default function Chat() {
       setStreaming(true)
       setMessages((m) => [
         ...m,
-        { _id: `u-${Date.now()}`, role: 'user', content: question },
-        { _id: `a-${Date.now()}`, role: 'assistant', content: '', sources: [], pending: true },
+        { _id: `u-${Date.now()}`, key: `u-${Date.now()}`, role: 'user', content: question },
+        { _id: `a-${Date.now()}`, key: `a-${Date.now()}`, role: 'assistant', content: '', sources: [], pending: true },
       ])
 
       let id = chatId
@@ -242,7 +252,7 @@ export default function Chat() {
         ) : (
           <div className="mx-auto max-w-3xl space-y-8 px-4 pt-8 pb-6">
             {messages.map((m) => (
-              <Message key={m._id} message={m} userAvatar={user?.avatar} />
+              <Message key={m.key || m._id} message={m} userAvatar={user?.avatar} />
             ))}
             <div ref={bottomRef} />
           </div>

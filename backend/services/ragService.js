@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const DocumentChunk = require('../models/DocumentChunk');
 const Document = require('../models/Document');
 const { generateEmbedding } = require('../utils/embeddings');
-const { groq, GROQ_MODEL } = require('../utils/groq');
+const { groq, createChatCompletion } = require('../utils/groq');
 
 const TOP_K = 6;               // chunks sent to the LLM
 const PER_DOC_LIMIT = 4;       // diversity cap so one document can't hog the context
@@ -116,10 +116,20 @@ const retrieveRelevantChunks = async (userId, queryEmbedding, documentIds = []) 
 const SYSTEM_PROMPT = `You are DocQuery, a precise research assistant that answers questions using ONLY the numbered document excerpts provided.
 
 Rules:
-- Ground every claim in the excerpts. Cite them inline with bracketed numbers like [1] or [2][3], placed right after the claim.
+- Ground every claim in the excerpts. Cite them inline with plain ASCII square brackets like [1] or [2][3], placed right after the claim. Never use other citation styles such as 【1】 or [1†L3].
 - If the excerpts don't contain the answer, say so plainly and suggest what the user could ask or upload instead. Never invent facts.
-- Be concise and well-structured: lead with the direct answer, then supporting detail. Use Markdown (short paragraphs, bullet lists, tables, **bold** for key terms) when it helps readability.
+- Be concise: start directly with the answer (no "Answer:" heading), then supporting detail. Use Markdown (short paragraphs, bullet lists, tables, **bold** for key terms) when it helps readability.
+- Do not add a "Sources" or "References" section — the app shows the sources itself.
 - Use the conversation history only to understand follow-up questions; the excerpts remain the source of truth.`;
+
+// Some models emit 【1】 or [1†L3-L5] despite instructions. Bracket characters are
+// mapped per streamed delta (they may arrive split); the full answer is cleaned at the end.
+const normalizeDelta = (text) => text.replace(/【/g, '[').replace(/】/g, ']');
+const normalizeCitations = (text) =>
+  normalizeDelta(text)
+    .replace(/\[(\d{1,2})†[^\]]*\]/g, '[$1]')
+    .replace(/\n+\**(?:Sources?|References?)\**:?\**[^\n]*(?:\n[-*] .*)*\s*$/i, '')
+    .trim();
 
 const buildContext = (sources) => {
   let ctx = '';
@@ -169,12 +179,11 @@ const generateAnswer = async (userId, question, documentIds = [], history = []) 
   if (!sources.length) return { answer: NO_CONTEXT_ANSWER, sources: [] };
   if (!groq) return { answer: extractiveAnswer(sources), sources };
 
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
+  const completion = await createChatCompletion({
     messages: buildMessages(question, sources, history),
     temperature: 0.2,
   });
-  const answer = completion.choices[0]?.message?.content?.trim() || NO_CONTEXT_ANSWER;
+  const answer = normalizeCitations(completion.choices[0]?.message?.content || '') || NO_CONTEXT_ANSWER;
   return { answer, sources };
 };
 
@@ -200,9 +209,8 @@ const streamAnswer = async ({ userId, question, documentIds = [], history = [], 
   if (!sources.length) return { answer: await emitWhole(NO_CONTEXT_ANSWER), sources: [] };
   if (!groq) return { answer: await emitWhole(extractiveAnswer(sources)), sources };
 
-  const stream = await groq.chat.completions.create(
+  const stream = await createChatCompletion(
     {
-      model: GROQ_MODEL,
       messages: buildMessages(question, sources, history),
       temperature: 0.2,
       stream: true,
@@ -213,8 +221,9 @@ const streamAnswer = async ({ userId, question, documentIds = [], history = [], 
   let answer = '';
   try {
     for await (const part of stream) {
-      const delta = part.choices[0]?.delta?.content;
-      if (delta) {
+      const raw = part.choices[0]?.delta?.content;
+      if (raw) {
+        const delta = normalizeDelta(raw);
         answer += delta;
         onToken?.(delta);
       }
@@ -222,7 +231,7 @@ const streamAnswer = async ({ userId, question, documentIds = [], history = [], 
   } catch (err) {
     if (!signal?.aborted) throw err;
   }
-  return { answer: answer.trim(), sources };
+  return { answer: normalizeCitations(answer), sources };
 };
 
 /**
@@ -232,8 +241,7 @@ const streamAnswer = async ({ userId, question, documentIds = [], history = [], 
 const generateDocumentInsights = async (fileName, text) => {
   if (!groq) return null;
   try {
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
+    const completion = await createChatCompletion({
       temperature: 0.3,
       response_format: { type: 'json_object' },
       messages: [
@@ -259,6 +267,7 @@ const generateDocumentInsights = async (fileName, text) => {
 };
 
 module.exports = {
+  normalizeCitations,
   retrieveRelevantChunks,
   generateAnswer,
   streamAnswer,

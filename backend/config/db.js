@@ -35,9 +35,19 @@ const connectDB = async () => {
     fs.mkdirSync(dbPath, { recursive: true });
 
     console.log('[db] MONGO_URI not set — starting a local MongoDB (first run downloads the binary)...');
-    memoryServer = await MongoMemoryServer.create({
-      instance: { dbPath, storageEngine: 'wiredTiger' },
-    });
+    // On a quick dev restart the previous mongod may still hold the data-dir lock for a moment.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        memoryServer = await MongoMemoryServer.create({
+          instance: { dbPath, storageEngine: 'wiredTiger' },
+        });
+        break;
+      } catch (err) {
+        if (!/DBPathInUse|lock file/i.test(String(err?.message)) || attempt >= 10) throw err;
+        console.log(`[db] data directory still locked by the previous run, retrying (${attempt}/10)...`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
     uri = memoryServer.getUri();
   }
 

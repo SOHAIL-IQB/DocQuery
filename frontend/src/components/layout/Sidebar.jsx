@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutGrid, MessageSquareText, Settings, LogOut, PanelLeft, SquarePen, Search,
@@ -47,6 +47,19 @@ function ChatItem({ chat, active, onNavigate }) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(chat.title)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const inputRef = useRef(null)
+  const openingDialog = useRef(false)
+  const menuButton = useRef(null)
+
+  // Focus and select the whole title when editing starts, so typing replaces it.
+  useEffect(() => {
+    if (!editing) return
+    const id = setTimeout(() => {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }, 0)
+    return () => clearTimeout(id)
+  }, [editing])
 
   const commit = () => {
     setEditing(false)
@@ -57,8 +70,10 @@ function ChatItem({ chat, active, onNavigate }) {
   if (editing) {
     return (
       <input
-        autoFocus
+        ref={inputRef}
         value={title}
+        maxLength={100}
+        aria-label="Chat title"
         onChange={(e) => setTitle(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -83,6 +98,7 @@ function ChatItem({ chat, active, onNavigate }) {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
+            ref={menuButton}
             className={cn(
               'mr-1 flex size-6 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-background/80 hover:text-foreground group-hover/item:opacity-100 data-[state=open]:opacity-100 max-md:opacity-100',
               active && 'opacity-100',
@@ -92,11 +108,18 @@ function ChatItem({ chat, active, onNavigate }) {
             <MoreHorizontal className="size-4" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-40">
+        <DropdownMenuContent
+          align="start"
+          className="w-40"
+          onCloseAutoFocus={(e) => {
+            if (openingDialog.current) e.preventDefault()
+            openingDialog.current = false
+          }}
+        >
           <DropdownMenuItem onSelect={() => { setTitle(chat.title); setEditing(true) }}>
             <Pencil /> Rename
           </DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" onSelect={() => setConfirmOpen(true)}>
+          <DropdownMenuItem variant="destructive" onSelect={() => { openingDialog.current = true; setConfirmOpen(true) }}>
             <Trash2 /> Delete
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -107,6 +130,7 @@ function ChatItem({ chat, active, onNavigate }) {
         title="Delete conversation?"
         description={<>“{chat.title}” and all of its messages will be permanently deleted.</>}
         confirmText="Delete"
+        returnFocusRef={menuButton}
         onConfirm={async () => {
           await deleteChat(chat._id)
           if (active) navigate('/chat')

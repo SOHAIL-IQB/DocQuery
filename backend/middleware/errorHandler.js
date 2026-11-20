@@ -15,6 +15,10 @@ const errorHandler = (err, req, res, next) => {
   } else if (err.name === 'ValidationError') {
     status = 400;
     message = Object.values(err.errors).map((e) => e.message).join(' ');
+  } else if (err.code === 11000) {
+    // Unique-index race, e.g. two simultaneous sign-ups with the same email.
+    status = 400;
+    message = err.keyPattern?.email ? 'An account with this email already exists.' : 'This record already exists.';
   } else if (err.name === 'CastError') {
     status = 404;
     message = 'Resource not found';

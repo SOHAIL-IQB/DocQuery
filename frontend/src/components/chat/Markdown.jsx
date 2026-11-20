@@ -4,7 +4,12 @@ import remarkGfm from 'remark-gfm'
 import { Tooltip } from '@/components/ui/tooltip'
 
 // Turn "[3]" citation markers into links we can render as chips, but leave real Markdown links alone.
-const linkCitations = (text) => text.replace(/\[(\d{1,2})\](?!\()/g, '[$1](#cite-$1)')
+// Also accept the 【3】 / [3†L1-L4] styles some models produce (older saved answers may contain them).
+const linkCitations = (text) =>
+  text
+    .replace(/【(\d{1,2})(?:†[^】]*)?】/g, '[$1]')
+    .replace(/\[(\d{1,2})†[^\]]*\]/g, '[$1]')
+    .replace(/\[(\d{1,2})\](?!\()/g, '[$1](#cite-$1)')
 
 function Markdown({ content, sources = [], onCite }) {
   return (
