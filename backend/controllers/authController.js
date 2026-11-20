@@ -1,89 +1,83 @@
 const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const isProd = process.env.NODE_ENV === 'production';
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: isProd,
+  sameSite: isProd ? 'none' : 'lax',
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+};
+
+const serializeUser = (user, token) => ({
+  _id: user.id,
+  name: user.name,
+  email: user.email,
+  avatar: user.avatar,
+  totalStorageUsed: user.totalStorageUsed,
+  createdAt: user.createdAt,
+  ...(token ? { token } : {}),
+});
+
+// Older accounts may have been stored with mixed-case emails.
+const findByEmail = (email, raw) =>
+  User.findOne({ email: { $in: [...new Set([email, raw])] } });
+
 // @desc    Register a new user
 // @route   POST /api/auth/register
 // @access  Public
-const registerUser = async (req, res) => {
+const registerUser = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const rawEmail = String(req.body.email || '').trim();
+    const email = rawEmail.toLowerCase();
+    const password = String(req.body.password || '');
+    const name = String(req.body.name || '').trim().slice(0, 50);
 
-    // Check if user exists
-    const userExists = await User.findOne({ email });
-
-    if (userExists) {
-      return res.status(400).json({ success: false, error: 'User already exists' });
+    if (!EMAIL_RE.test(email)) {
+      return res.status(400).json({ success: false, error: 'Please enter a valid email address.' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
     }
 
-    // Create user
-    const user = await User.create({
-      email,
-      password,
-    });
-
-    if (user) {
-      const token = generateToken(user._id);
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "none"
-      });
-
-      res.status(201).json({
-        success: true,
-        data: {
-          _id: user.id,
-          name: user.name,
-          email: user.email,
-          avatar: user.avatar,
-          totalStorageUsed: user.totalStorageUsed,
-          token: token,
-        }
-      });
-    } else {
-      res.status(400).json({ success: false, error: 'Invalid user data' });
+    if (await findByEmail(email, rawEmail)) {
+      return res.status(400).json({ success: false, error: 'An account with this email already exists.' });
     }
+
+    const user = await User.create({ email, password, ...(name ? { name } : {}) });
+    const token = generateToken(user._id);
+    res.cookie('token', token, cookieOptions);
+    res.status(201).json({ success: true, data: serializeUser(user, token) });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 };
 
 // @desc    Authenticate a user
 // @route   POST /api/auth/login
 // @access  Public
-const loginUser = async (req, res) => {
+const loginUser = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const rawEmail = String(req.body.email || '').trim();
+    const email = rawEmail.toLowerCase();
+    const password = String(req.body.password || '');
 
-    // Check for user email (adding +password to explicitly select it if needed, though schema is set to select: false)
-    const user = await User.findOne({ email }).select('+password');
-
-    if (user && (await user.matchPassword(password))) {
-      const token = generateToken(user._id);
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "none"
-      });
-
-      res.json({
-        success: true,
-        data: {
-          _id: user.id,
-          name: user.name,
-          email: user.email,
-          avatar: user.avatar,
-          totalStorageUsed: user.totalStorageUsed,
-          token: token,
-        }
-      });
-    } else {
-      res.status(401).json({ success: false, error: 'Invalid email or password' });
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
+
+    const user = await findByEmail(email, rawEmail).select('+password');
+    if (!user || !(await user.matchPassword(password))) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+    }
+
+    const token = generateToken(user._id);
+    res.cookie('token', token, cookieOptions);
+    res.json({ success: true, data: serializeUser(user, token) });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 };
 
@@ -91,29 +85,12 @@ const loginUser = async (req, res) => {
 // @route   GET /api/auth/me
 // @access  Private
 const getMe = async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id);
-    if (user) {
-      res.json({
-        success: true,
-        data: {
-          _id: user.id,
-          name: user.name,
-          email: user.email,
-          avatar: user.avatar,
-          totalStorageUsed: user.totalStorageUsed,
-        }
-      });
-    } else {
-      res.status(404).json({ success: false, error: 'User not found' });
-    }
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+  res.json({ success: true, data: serializeUser(req.user) });
 };
 
 module.exports = {
   registerUser,
   loginUser,
   getMe,
+  serializeUser,
 };

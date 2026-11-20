@@ -1,36 +1,52 @@
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 
-/**
- * Extracts raw text from a file buffer based on its mimetype.
- * @param {Buffer} buffer - The file buffer.
- * @param {string} mimetype - The file MIME type.
- * @returns {Promise<string>} - Extracted text.
- */
-const extractText = async (buffer, mimetype) => {
-  try {
-    if (mimetype === 'application/pdf') {
-      const data = await pdfParse(buffer);
-      return data.text;
-    } 
-    else if (
-      mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    ) {
-      const result = await mammoth.extractRawText({ buffer });
-      return result.value;
-    } 
-    else if (mimetype === 'text/plain') {
-      return buffer.toString('utf-8');
-    } 
-    else {
-      throw new Error('Unsupported file type for text extraction.');
-    }
-  } catch (error) {
-    console.error('Text extraction failed:', error);
-    throw new Error('Failed to extract text from document: ' + error.message);
-  }
+const MIME = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  txt: 'text/plain',
+  md: 'text/markdown',
 };
 
-module.exports = {
-  extractText
+/**
+ * Browsers are inconsistent about MIME types (e.g. .docx can arrive as
+ * application/octet-stream, .md as an empty string). Resolve the real type
+ * from the MIME first and the file extension second.
+ */
+const resolveMimeType = (mimetype = '', fileName = '') => {
+  if (Object.values(MIME).includes(mimetype)) return mimetype;
+  const ext = fileName.split('.').pop().toLowerCase();
+  return MIME[ext] || null;
 };
+
+/**
+ * Extracts raw text from a file buffer.
+ * @param {Buffer} buffer
+ * @param {string} mimetype a type returned by resolveMimeType
+ * @returns {Promise<string>}
+ */
+const extractText = async (buffer, mimetype) => {
+  let text;
+  switch (mimetype) {
+    case MIME.pdf:
+      text = (await pdfParse(buffer)).text;
+      break;
+    case MIME.docx:
+      text = (await mammoth.extractRawText({ buffer })).value;
+      break;
+    case MIME.txt:
+    case MIME.md:
+      text = buffer.toString('utf-8');
+      break;
+    default:
+      throw new Error('Unsupported file type.');
+  }
+
+  text = (text || '').replace(/\u0000/g, '').trim();
+  if (!text) {
+    throw new Error('No readable text found. Scanned/image-only PDFs are not supported yet.');
+  }
+  return text;
+};
+
+module.exports = { extractText, resolveMimeType, MIME };
