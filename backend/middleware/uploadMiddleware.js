@@ -1,73 +1,68 @@
 const multer = require('multer');
 const Document = require('../models/Document');
+const { resolveMimeType } = require('../utils/extractText');
 
-// Max limits as per PRD
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_TOTAL_STORAGE = 50 * 1024 * 1024; // 50MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024;     // 10MB per file
+const MAX_TOTAL_STORAGE = 50 * 1024 * 1024; // 50MB per user
 const MAX_DOCUMENTS = 20;
 
-// Set up Multer memory storage (buffers the file in memory)
-const storage = multer.memoryStorage();
-
-// Multer upload instance with size tracking
 const upload = multer({
-  storage,
-  limits: {
-    fileSize: MAX_FILE_SIZE // Enforcement 1: 10MB maximum per file
-  },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE, files: 1 },
   fileFilter: (req, file, cb) => {
-    // Optional: Filter file types (PDF, DOCX, TXT)
-    const allowedMimeTypes = [
-      'application/pdf',
-      'text/plain',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' // DOCX
-    ];
-    if (allowedMimeTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only PDF, DOCX, and TXT are supported.'));
+    // Multer decodes filenames as latin1; restore UTF-8 names (e.g. "résumé.pdf").
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    const type = resolveMimeType(file.mimetype, file.originalname);
+    if (!type) {
+      const err = new Error('Unsupported file type. Upload a PDF, DOCX, TXT or Markdown file.');
+      err.status = 415;
+      return cb(err);
     }
-  }
+    file.resolvedMimeType = type;
+    cb(null, true);
+  },
 });
 
-// Middleware to enforce user-level storage and document count limits
+/** Sum of the user's stored document sizes — the source of truth for quota. */
+const getStorageUsed = async (userId) => {
+  const [row] = await Document.aggregate([
+    { $match: { userId } },
+    { $group: { _id: null, total: { $sum: '$fileSize' }, count: { $sum: 1 } } },
+  ]);
+  return { bytes: row?.total || 0, count: row?.count || 0 };
+};
+
 const checkStorageLimits = async (req, res, next) => {
   try {
-    // If no file, let the controller handle it
     if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No file uploaded' });
+      return res.status(400).json({ success: false, error: 'No file uploaded.' });
     }
 
-    const newFileSize = req.file.size;
-    const user = req.user; // populated by auth middleware
+    const { bytes, count } = await getStorageUsed(req.user._id);
 
-    // Count existing documents for this user
-    const documentCount = await Document.countDocuments({ userId: user._id });
-
-    // Enforcement 2: Maximum 20 documents per user
-    if (documentCount >= MAX_DOCUMENTS) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Document limit exceeded. Maximum 20 documents allowed per user.' 
+    if (count >= MAX_DOCUMENTS) {
+      return res.status(403).json({
+        success: false,
+        error: `Document limit reached (${MAX_DOCUMENTS}). Delete a document to upload another.`,
       });
     }
-
-    // Enforcement 3: 50MB total storage per user
-    if (user.totalStorageUsed + newFileSize > MAX_TOTAL_STORAGE) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Storage limit exceeded. Please delete documents to continue.' 
+    if (bytes + req.file.size > MAX_TOTAL_STORAGE) {
+      return res.status(403).json({
+        success: false,
+        error: 'Storage limit reached (50 MB). Delete documents to free up space.',
       });
     }
-
     next();
   } catch (error) {
-    console.error('checkStorageLimits catch:', error.stack);
-    res.status(500).json({ success: false, error: 'checkStorageLimits: ' + error.message });
+    next(error);
   }
 };
 
 module.exports = {
   upload,
-  checkStorageLimits
+  checkStorageLimits,
+  getStorageUsed,
+  MAX_FILE_SIZE,
+  MAX_TOTAL_STORAGE,
+  MAX_DOCUMENTS,
 };

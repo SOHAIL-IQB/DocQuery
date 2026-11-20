@@ -1,259 +1,278 @@
+const mongoose = require('mongoose');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
-const { generateAnswer } = require('../services/ragService');
+const { generateAnswer, streamAnswer } = require('../services/ragService');
 
-// Simple Greetings matcher
-const GREETINGS = [
-  "hello", "hi", "hey", "good morning", "good evening", 
-  "how are you", "what can you do", "who are you"
-];
+const GREETINGS = new Set([
+  'hello', 'hi', 'hey', 'yo', 'hola', 'good morning', 'good afternoon', 'good evening',
+  'how are you', 'what can you do', 'who are you', 'help',
+]);
 
-const isGreeting = (msg) => {
-  const cleanMsg = msg.toLowerCase().trim().replace(/[^a-z0-9 ]/g, '');
-  return GREETINGS.includes(cleanMsg);
+const isGreeting = (msg) => GREETINGS.has(msg.toLowerCase().trim().replace(/[^a-z0-9 ]/g, '').trim());
+
+const greetingAnswer = (user) => {
+  const name = user?.name && user.name !== 'User' ? ` ${user.name}` : '';
+  return `Hi${name}! I'm your **DocQuery** assistant.\n\nUpload PDFs, Word documents, or text files and ask me anything about them — I'll answer using only what's inside your documents and cite the exact passages I used.\n\nWhat would you like to know?`;
+};
+
+/** Loads a chat and verifies ownership. Sends the error response itself and returns null on failure. */
+const loadOwnedChat = async (req, res, chatId) => {
+  if (!mongoose.Types.ObjectId.isValid(chatId)) {
+    res.status(404).json({ success: false, error: 'Chat not found' });
+    return null;
+  }
+  const chat = await Chat.findById(chatId);
+  if (!chat) {
+    res.status(404).json({ success: false, error: 'Chat not found' });
+    return null;
+  }
+  if (String(chat.userId) !== String(req.user._id)) {
+    res.status(403).json({ success: false, error: 'Not authorized to access this chat' });
+    return null;
+  }
+  return chat;
+};
+
+const validatePayload = (req, res) => {
+  const { chatId, question, documentIds } = req.body;
+  const q = typeof question === 'string' ? question.trim() : '';
+  if (!chatId || !q) {
+    res.status(400).json({ success: false, error: 'chatId and question are required' });
+    return null;
+  }
+  if (q.length > 4000) {
+    res.status(400).json({ success: false, error: 'Question is too long (max 4000 characters).' });
+    return null;
+  }
+  return { chatId, question: q, documentIds: Array.isArray(documentIds) ? documentIds : [] };
+};
+
+/** Saves the user's message, auto-titles new chats, and returns prior history. */
+const recordQuestion = async (chat, question) => {
+  const history = await Message.find({ chatId: chat._id })
+    .sort({ createdAt: -1 })
+    .limit(6)
+    .select('role content')
+    .lean();
+
+  await Message.create({ chatId: chat._id, role: 'user', content: question });
+
+  if (chat.title === 'New Chat' || chat.title === 'New Conversation') {
+    chat.title = question.length > 48 ? `${question.slice(0, 48).trim()}…` : question;
+  }
+  chat.updatedAt = new Date();
+  await chat.save();
+
+  return history.reverse();
 };
 
 // @desc    Create a new chat
 // @route   POST /api/chat/create
 // @access  Private
-const createChat = async (req, res) => {
+const createChat = async (req, res, next) => {
   try {
-    const chat = await Chat.create({
-      userId: req.user._id,
-      title: req.body.title || 'New Chat'
-    });
-
-    res.status(201).json({
-      success: true,
-      data: chat
-    });
+    const title = String(req.body.title || 'New Chat').trim().slice(0, 100) || 'New Chat';
+    const chat = await Chat.create({ userId: req.user._id, title });
+    res.status(201).json({ success: true, data: chat });
   } catch (error) {
-    console.error('Error in createChat:', error);
-    res.status(500).json({ success: false, error: 'Server error' });
+    next(error);
   }
 };
 
-// @desc    Send a message to a chat
+// @desc    Send a message and get the full answer in one response
 // @route   POST /api/chat/message
 // @access  Private
-const sendMessage = async (req, res) => {
+const sendMessage = async (req, res, next) => {
   try {
-    const { chatId, question, documentIds } = req.body;
+    const payload = validatePayload(req, res);
+    if (!payload) return;
+    const chat = await loadOwnedChat(req, res, payload.chatId);
+    if (!chat) return;
 
-    if (!chatId || !question || !documentIds) {
-      return res.status(400).json({ success: false, message: 'Invalid request payload: chatId, question, and documentIds are required' });
-    }
+    const history = await recordQuestion(chat, payload.question);
 
-    // 1. Fetch the chat
-    const chat = await Chat.findById(chatId);
+    const aiResponse = isGreeting(payload.question)
+      ? { answer: greetingAnswer(req.user), sources: [] }
+      : await generateAnswer(req.user._id, payload.question, payload.documentIds, history);
 
-    // 2. Validate existence
-    if (!chat) {
-      return res.status(404).json({ success: false, error: 'Chat not found' });
-    }
-
-    // 3. Validate ownership using explicit bounds
-    if (chat.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Not authorized to access this chat' });
-    }
-
-    // 4. Save user message first
-    await Message.create({
+    const assistantMessage = await Message.create({
       chatId: chat._id,
-      role: 'user',
-      content: question
+      role: 'assistant',
+      content: aiResponse.answer,
+      sources: aiResponse.sources,
     });
 
-    // 4.5 Auto-generate title for fresh chats
-    if (chat.title === 'New Chat' || chat.title === 'New Conversation') {
-      chat.title = question.substring(0, 40) + (question.length > 40 ? '...' : '');
-      await chat.save();
-    }
-
-    // 5. Call RAG logic safely or bypass for greetings
-    let aiResponse;
-    if (isGreeting(question)) {
-      const userName = req.user && req.user.name ? req.user.name : '';
-      const greetingFormat = userName ? `Hello ${userName}!` : 'Hello!';
-      
-      aiResponse = {
-        answer: `${greetingFormat} I'm your DocuQuery assistant.\n\nYou can upload documents such as PDFs, DOCX, or TXT files and ask questions about their content.\n\nHow can I help you today?`,
-        sources: []
-      };
-    } else {
-      try {
-        aiResponse = await generateAnswer(req.user._id, question, documentIds || []);
-      } catch (llmError) {
-        console.error('generateAnswer error:', llmError);
-        return res.status(500).json({ 
-          error: "AI generation failed",
-          message: llmError.message || "Unknown AI integration error"
-        });
-      }
-    }
-
-    // 6. Conditionally save assistant message (DO NOT save rate-limit API quota warnings to the DB)
-    const isRateLimitError = aiResponse.answer.includes('Rate Limit Reached');
-    let assistantMessage;
-    
-    if (!isRateLimitError) {
-      assistantMessage = await Message.create({
-        chatId: chat._id,
-        role: 'assistant',
-        content: aiResponse.answer,
-        sources: aiResponse.sources
-      });
-    }
-
-    // 7. Return payload to the React UI
     res.status(201).json({
       success: true,
       data: {
-        answer: assistantMessage ? assistantMessage.content : aiResponse.answer,
-        sources: assistantMessage ? assistantMessage.sources : aiResponse.sources
-      }
+        _id: assistantMessage._id,
+        answer: assistantMessage.content,
+        sources: assistantMessage.sources,
+        chatTitle: chat.title,
+      },
     });
-
   } catch (error) {
-    console.error("Chat processing error:", error);
-    return res.status(500).json({ 
-      error: "AI generation failed",
-      message: error.message 
+    next(error);
+  }
+};
+
+// @desc    Send a message and stream the answer with Server-Sent Events
+// @route   POST /api/chat/message/stream
+// @access  Private
+const streamMessage = async (req, res, next) => {
+  let payload;
+  let chat;
+  try {
+    payload = validatePayload(req, res);
+    if (!payload) return;
+    chat = await loadOwnedChat(req, res, payload.chatId);
+    if (!chat) return;
+  } catch (error) {
+    return next(error);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  const send = (event) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  // Abort the LLM call if the user clicks "Stop" or closes the tab.
+  const controller = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort();
+  });
+
+  let answer = '';
+  let sources = [];
+  try {
+    const history = await recordQuestion(chat, payload.question);
+    send({ type: 'meta', chatTitle: chat.title });
+
+    try {
+      if (isGreeting(payload.question)) {
+        answer = greetingAnswer(req.user);
+        send({ type: 'sources', sources: [] });
+        send({ type: 'token', value: answer });
+      } else {
+        const result = await streamAnswer({
+          userId: req.user._id,
+          question: payload.question,
+          documentIds: payload.documentIds,
+          history,
+          signal: controller.signal,
+          onSources: (s) => {
+            sources = s;
+            send({ type: 'sources', sources: s });
+          },
+          onToken: (t) => {
+            answer += t;
+            send({ type: 'token', value: t });
+          },
+        });
+        answer = result.answer || answer;
+      }
+    } catch (error) {
+      // A stop/disconnect can surface as an abort error from the LLM client — that's not a failure.
+      if (!controller.signal.aborted) throw error;
+    }
+
+    const stopped = controller.signal.aborted;
+    let messageId;
+    if (answer.trim() || stopped) {
+      // Always record a stopped turn so the conversation reads the same after a reload.
+      const content = !answer.trim() ? '_Stopped._' : stopped ? `${answer.trim()}\n\n_— response stopped_` : answer.trim();
+      const saved = await Message.create({ chatId: chat._id, role: 'assistant', content, sources });
+      messageId = saved._id;
+    }
+    send({ type: 'done', messageId, stopped });
+  } catch (error) {
+    console.error('[chat] stream error:', error);
+    const isRateLimit = error?.status === 429;
+    send({
+      type: 'error',
+      message: isRateLimit
+        ? 'The AI provider is rate-limiting requests right now. Please wait a few seconds and try again.'
+        : 'Something went wrong while generating the answer. Please try again.',
     });
+  } finally {
+    res.end();
   }
 };
 
 // @desc    Get all messages for a chat
 // @route   GET /api/chat/:chatId
 // @access  Private
-const getChatHistory = async (req, res) => {
+const getChatHistory = async (req, res, next) => {
   try {
-    const chatId = req.params.chatId;
-
-    // 1. Fetch the chat
-    const chat = await Chat.findById(chatId);
-
-    if (!chat) {
-      return res.status(404).json({ success: false, error: 'Chat not found' });
-    }
-
-    // 2. Validate ownership safely
-    if (chat.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Not authorized to access this chat' });
-    }
-
-    // 3. Fetch specific messages ordered explicitly Ascending by creation
-    const messages = await Message.find({ chatId: chat._id }).sort({ createdAt: 1 });
-
-    res.status(200).json({
-      success: true,
-      data: messages
-    });
-
+    const chat = await loadOwnedChat(req, res, req.params.chatId);
+    if (!chat) return;
+    const messages = await Message.find({ chatId: chat._id }).sort({ createdAt: 1 }).lean();
+    res.json({ success: true, data: messages, chat });
   } catch (error) {
-    console.error('Error in getChatHistory:', error);
-    res.status(500).json({ success: false, error: 'Server error' });
+    next(error);
   }
 };
 
-// @desc    Delete a chat
+// @desc    Delete a chat and its messages
 // @route   DELETE /api/chat/:chatId
 // @access  Private
-const deleteChat = async (req, res) => {
+const deleteChat = async (req, res, next) => {
   try {
-    const chatId = req.params.chatId;
-
-    // 1. Fetch the chat
-    const chat = await Chat.findById(chatId);
-
-    if (!chat) {
-      return res.status(404).json({ success: false, error: 'Chat not found' });
-    }
-
-    // 2. Validate ownership safely
-    if (chat.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Not authorized to delete this chat' });
-    }
-
-    // 3. Cascade Delete Safety - Delete child messages first
+    const chat = await loadOwnedChat(req, res, req.params.chatId);
+    if (!chat) return;
     await Message.deleteMany({ chatId: chat._id });
-
-    // 4. Delete the chat itself
     await chat.deleteOne();
-
-    res.status(200).json({
-      success: true,
-      data: {}
-    });
-
+    res.json({ success: true, data: {} });
   } catch (error) {
-    console.error('Error in deleteChat:', error);
-    res.status(500).json({ success: false, error: 'Server error' });
+    next(error);
   }
 };
 
 // @desc    Get all chats for a user
 // @route   GET /api/chat
 // @access  Private
-const getAllChats = async (req, res) => {
+const getAllChats = async (req, res, next) => {
   try {
-    // strict user filter
-    const chats = await Chat.find({ userId: req.user._id }).sort({ updatedAt: -1 });
-
-    res.status(200).json({
-      success: true,
-      data: chats
-    });
+    const chats = await Chat.find({ userId: req.user._id }).sort({ updatedAt: -1 }).lean();
+    res.json({ success: true, data: chats });
   } catch (error) {
-    console.error('Error in getAllChats:', error);
-    res.status(500).json({ success: false, error: 'Server error' });
+    next(error);
   }
 };
 
 // @desc    Rename a chat
 // @route   PATCH /api/chat/:chatId/rename
 // @access  Private
-const renameChat = async (req, res) => {
+const renameChat = async (req, res, next) => {
   try {
-    const chatId = req.params.chatId;
-    const { title } = req.body;
-
-    if (!title || !title.trim()) {
+    const title = String(req.body.title || '').trim();
+    if (!title) {
       return res.status(400).json({ success: false, error: 'Title is required' });
     }
-
-    // 1. Fetch the chat
-    const chat = await Chat.findById(chatId);
-
-    if (!chat) {
-      return res.status(404).json({ success: false, error: 'Chat not found' });
-    }
-
-    // 2. Validate ownership safely
-    if (chat.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Not authorized to configure this chat' });
-    }
-
-    // 3. Update the title
-    chat.title = title.trim();
-    await chat.save();
-
-    res.status(200).json({
-      success: true,
-      data: chat
-    });
-
+    const chat = await loadOwnedChat(req, res, req.params.chatId);
+    if (!chat) return;
+    chat.title = title.slice(0, 100);
+    // Renaming is not conversation activity — don't bump the chat to the top of the list.
+    await chat.save({ timestamps: false });
+    res.json({ success: true, data: chat });
   } catch (error) {
-    console.error('Error in renameChat:', error);
-    res.status(500).json({ success: false, error: 'Server error' });
+    next(error);
   }
 };
 
 module.exports = {
   createChat,
   sendMessage,
+  streamMessage,
   getAllChats,
   getChatHistory,
   deleteChat,
-  renameChat
+  renameChat,
 };

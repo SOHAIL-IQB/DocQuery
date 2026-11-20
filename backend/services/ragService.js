@@ -2,195 +2,274 @@ const mongoose = require('mongoose');
 const DocumentChunk = require('../models/DocumentChunk');
 const Document = require('../models/Document');
 const { generateEmbedding } = require('../utils/embeddings');
-const groq = require('../utils/groq');
+const { groq, createChatCompletion } = require('../utils/groq');
 
-/**
- * Retrieves the most relevant document chunks for a given query embedding.
- * Uses MongoDB Atlas Vector Search ($vectorSearch).
- * 
- * @param {string} userId - The ID of the user requesting the search (for workspace isolation).
- * @param {number[]} queryEmbedding - The 3072-dimensional vector representation of the query.
- * @param {string[]} documentIds - Optional array of document IDs to restrict the search.
- * @returns {Promise<Array>} - Array of matching chunks with chunkText, documentId, and similarity score.
- */
-const retrieveRelevantChunks = async (userId, queryEmbedding, documentIds = []) => {
-  try {
-    // ONLY push userId to the Vector Search Native filter, as documentId is not indexed in Atlas
-    const baseFilter = {
-      userId: new mongoose.Types.ObjectId(userId)
-    };
+const TOP_K = 6;               // chunks sent to the LLM
+const PER_DOC_LIMIT = 4;       // diversity cap so one document can't hog the context
+const MIN_SCORE = 0.15;        // cosine floor for the local search
+const MAX_CONTEXT_CHARS = 14000;
+const HISTORY_TURNS = 6;       // previous messages included for follow-up questions
 
-    // Pre-filter documents to ensure we only query those that have finished embedding processing ('Ready')
-    let readyDocumentIds = [];
-    if (documentIds && Array.isArray(documentIds) && documentIds.length > 0) {
-       const requestedIds = documentIds.filter(id => mongoose.Types.ObjectId.isValid(id));
-       const readyDocs = await Document.find({
-           _id: { $in: requestedIds },
-           userId: new mongoose.Types.ObjectId(userId),
-           status: 'Ready'
-       }).select('_id');
-       readyDocumentIds = readyDocs.map(doc => doc._id);
-    } else {
-       // "All Documents" mode - Pull all Ready documents for the user
-       const readyDocs = await Document.find({
-           userId: new mongoose.Types.ObjectId(userId),
-           status: 'Ready'
-       }).select('_id');
-       readyDocumentIds = readyDocs.map(doc => doc._id);
-    }
+// 'auto' tries Atlas $vectorSearch first, then falls back to in-app cosine.
+// 'atlas' / 'local' force one strategy.
+const VECTOR_SEARCH_MODE = (process.env.VECTOR_SEARCH || 'auto').toLowerCase();
+let atlasAvailable = VECTOR_SEARCH_MODE !== 'local';
 
-    // If there are literally no Ready documents available, bypass expensive Vector search
-    if (readyDocumentIds.length === 0) {
-        return [];
-    }
+const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
 
-    const pipeline = [
-      {
-        $vectorSearch: {
-          index: 'vector_index',
-          path: 'embedding',
-          queryVector: queryEmbedding,
-          numCandidates: 100,
-          limit: 100, // Fetch broader set upfront to filter down in memory
-          filter: baseFilter
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          chunkText: '$text', // Project mapping text to chunkText
-          documentId: 1,
-          score: { $meta: 'vectorSearchScore' }
-        }
-      }
-    ];
-
-    // Apply array-based document filtering AFTER vector search using $match, strictly limiting to Ready arrays
-    pipeline.push({
-      $match: {
-        documentId: { $in: readyDocumentIds }
-      }
-    });
-
-    // Enforce Document Diversity: Prevent a single document from monopolizing the "All Documents" context window
-    pipeline.push(
-      {
-        // Group by document ID while preserving the sorted order from VectorSearch
-        $group: {
-          _id: '$documentId',
-          chunks: {
-            $push: {
-              chunkText: '$chunkText',
-              documentId: '$documentId',
-              score: '$score'
-            }
-          }
-        }
-      },
-      {
-        // Keep ONLY the top 5 most relevant chunks per document
-        $project: {
-          topChunks: { $slice: ['$chunks', 5] }
-        }
-      },
-      {
-        // Flatten the array of chunks back into individual documents
-        $unwind: '$topChunks'
-      },
-      {
-        // Replace root to restore original chunk structure
-        $replaceRoot: { newRoot: '$topChunks' }
-      },
-      {
-        // Re-sort globally by vector score since grouping scrambles order
-        $sort: { score: -1 }
-      },
-      {
-        // Limit down to top 5 diverse chunks overall across all matched documents
-        $limit: 5
-      }
-    );
-
-    const results = await DocumentChunk.aggregate(pipeline);
-    return results;
-  } catch (error) {
-    console.error('Error in retrieveRelevantChunks:', error);
-    throw new Error('Failed to retrieve relevant documents.');
+/** Keeps the top N chunks per document, then the global top K. */
+const diversify = (chunks, k = TOP_K) => {
+  const perDoc = new Map();
+  const out = [];
+  for (const c of chunks.sort((a, b) => b.score - a.score)) {
+    const key = String(c.documentId);
+    const n = perDoc.get(key) || 0;
+    if (n >= PER_DOC_LIMIT) continue;
+    perDoc.set(key, n + 1);
+    out.push(c);
+    if (out.length >= k) break;
   }
+  return out;
+};
+
+const atlasSearch = async (userId, queryEmbedding, readyIds) => {
+  const results = await DocumentChunk.aggregate([
+    {
+      $vectorSearch: {
+        index: 'vector_index',
+        path: 'embedding',
+        queryVector: queryEmbedding,
+        numCandidates: 150,
+        limit: 60,
+        filter: { userId: toObjectId(userId) },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        chunkText: '$text',
+        documentId: 1,
+        chunkIndex: 1,
+        score: { $meta: 'vectorSearchScore' },
+      },
+    },
+    { $match: { documentId: { $in: readyIds } } },
+  ]);
+  return results;
+};
+
+const localSearch = async (userId, queryEmbedding, readyIds) => {
+  const chunks = await DocumentChunk.find(
+    { userId: toObjectId(userId), documentId: { $in: readyIds } },
+    { text: 1, embedding: 1, documentId: 1, chunkIndex: 1 }
+  ).lean();
+
+  return chunks
+    .map((c) => {
+      // Embeddings are L2-normalized, so the dot product is the cosine similarity.
+      let score = 0;
+      const e = c.embedding;
+      for (let i = 0; i < e.length; i++) score += e[i] * queryEmbedding[i];
+      return { chunkText: c.text, documentId: c.documentId, chunkIndex: c.chunkIndex, score };
+    })
+    .filter((c) => c.score >= MIN_SCORE);
 };
 
 /**
- * Generates an answer to a user's question purely based on the retrieved context chunks.
- * Uses Groq LLaMA 3.1 8B with strict grounding instructions.
- * 
- * @param {string} userId - The ID of the user (for workspace isolation).
- * @param {string} question - The user's prompt question.
- * @param {string[]} documentIds - Optional array of document IDs.
- * @returns {Promise<Object>} - Contains { answer: string, sources: Array }
+ * Finds the most relevant chunks across the user's Ready documents.
+ * @returns {Promise<Array<{chunkText, documentId, fileName, chunkIndex, score}>>}
  */
-const generateAnswer = async (userId, question, documentIds = []) => {
-  try {
-    // 1. Generate embedding for user query
-    const queryEmbedding = await generateEmbedding(question);
+const retrieveRelevantChunks = async (userId, queryEmbedding, documentIds = []) => {
+  const filter = { userId: toObjectId(userId), status: 'Ready' };
+  const requested = (Array.isArray(documentIds) ? documentIds : [])
+    .filter((id) => mongoose.Types.ObjectId.isValid(id));
+  if (requested.length) filter._id = { $in: requested.map(toObjectId) };
 
-    // 2. Retrieve relevant chunks (limits to 8)
-    const sources = await retrieveRelevantChunks(userId, queryEmbedding, documentIds);
+  const readyDocs = await Document.find(filter).select('_id fileName').lean();
+  if (!readyDocs.length) return [];
 
-    if (!sources || sources.length === 0) {
-      return {
-        answer: "I could not find relevant information in the selected documents.",
-        sources: []
-      };
+  const readyIds = readyDocs.map((d) => d._id);
+  const names = new Map(readyDocs.map((d) => [String(d._id), d.fileName]));
+
+  let candidates = [];
+  if (atlasAvailable) {
+    try {
+      candidates = await atlasSearch(userId, queryEmbedding, readyIds);
+    } catch (err) {
+      if (VECTOR_SEARCH_MODE === 'atlas') throw err;
+      console.warn(`[rag] Atlas $vectorSearch unavailable (${err.codeName || err.message}). Using local cosine search.`);
+      atlasAvailable = false;
     }
+  }
+  // Atlas silently returns nothing when the index is missing — fall back in that case too.
+  if (!candidates.length && VECTOR_SEARCH_MODE !== 'atlas') {
+    candidates = await localSearch(userId, queryEmbedding, readyIds);
+  }
 
-    // 3. Construct Context Blocks
-    let contextStr = '';
-    sources.forEach((source, index) => {
-      contextStr += `\n--- Chunk ${index + 1} ---\n${source.chunkText}\n`;
-    });
-    
-    // Trim context length before sending to LLM (allow ~15,000 chars)
-    contextStr = contextStr.slice(0, 15000);
+  return diversify(candidates).map((c) => ({
+    ...c,
+    documentId: String(c.documentId),
+    fileName: names.get(String(c.documentId)) || 'Document',
+  }));
+};
 
-    // 4. Construct Strict Prompt
-    const prompt = `SYSTEM:
-"You are an AI assistant answering questions strictly from the provided documents."
+const SYSTEM_PROMPT = `You are DocQuery, a precise research assistant that answers questions using ONLY the numbered document excerpts provided.
 
-CONTEXT:
-${contextStr}
+Rules:
+- Ground every claim in the excerpts. Cite them inline with plain ASCII square brackets like [1] or [2][3], placed right after the claim. Never use other citation styles such as 【1】 or [1†L3].
+- If the excerpts don't contain the answer, say so plainly and suggest what the user could ask or upload instead. Never invent facts.
+- Be concise: start directly with the answer (no "Answer:" heading), then supporting detail. Use Markdown (short paragraphs, bullet lists, tables, **bold** for key terms) when it helps readability.
+- Do not add a "Sources" or "References" section — the app shows the sources itself.
+- Use the conversation history only to understand follow-up questions; the excerpts remain the source of truth.`;
 
-QUESTION:
-${question}`;
+// Some models emit 【1】 or [1†L3-L5] despite instructions. Bracket characters are
+// mapped per streamed delta (they may arrive split); the full answer is cleaned at the end.
+const normalizeDelta = (text) => text.replace(/【/g, '[').replace(/】/g, ']');
+const normalizeCitations = (text) =>
+  normalizeDelta(text)
+    .replace(/\[(\d{1,2})†[^\]]*\]/g, '[$1]')
+    .replace(/\n+\**(?:Sources?|References?)\**:?\**[^\n]*(?:\n[-*] .*)*\s*$/i, '')
+    .trim();
 
-    // 5. Invoke Groq LLM (Routed to llama-3.1-8b-instant)
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
+const buildContext = (sources) => {
+  let ctx = '';
+  sources.forEach((s, i) => {
+    const block = `[${i + 1}] (from "${s.fileName}")\n${s.chunkText}\n\n`;
+    if (ctx.length + block.length <= MAX_CONTEXT_CHARS) ctx += block;
+  });
+  return ctx.trim();
+};
+
+const buildMessages = (question, sources, history = []) => [
+  { role: 'system', content: SYSTEM_PROMPT },
+  ...history.slice(-HISTORY_TURNS).map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, 2000),
+  })),
+  {
+    role: 'user',
+    content: `DOCUMENT EXCERPTS:\n${buildContext(sources)}\n\nQUESTION: ${question}`,
+  },
+];
+
+const NO_CONTEXT_ANSWER =
+  "I couldn't find anything relevant to that in the selected documents. Try rephrasing the question, selecting different documents, or uploading a file that covers this topic.";
+
+/** Used when no LLM key is configured: return the best passages verbatim. */
+const extractiveAnswer = (sources) => {
+  const quotes = sources
+    .slice(0, 3)
+    .map((s, i) => `> ${s.chunkText.slice(0, 420).replace(/\n+/g, ' ')}${s.chunkText.length > 420 ? '…' : ''} [${i + 1}]`)
+    .join('\n\n');
+  return `**AI generation is not configured** (set \`GROQ_API_KEY\` in \`backend/.env\`), so here are the most relevant passages from your documents:\n\n${quotes}`;
+};
+
+/** Shared retrieval step for both streaming and non-streaming answers. */
+const retrieve = async (userId, question, documentIds) => {
+  const queryEmbedding = await generateEmbedding(question);
+  return retrieveRelevantChunks(userId, queryEmbedding, documentIds);
+};
+
+/**
+ * Non-streaming answer (kept for API compatibility).
+ * @returns {Promise<{answer: string, sources: Array}>}
+ */
+const generateAnswer = async (userId, question, documentIds = [], history = []) => {
+  const sources = await retrieve(userId, question, documentIds);
+  if (!sources.length) return { answer: NO_CONTEXT_ANSWER, sources: [] };
+  if (!groq) return { answer: extractiveAnswer(sources), sources };
+
+  const completion = await createChatCompletion({
+    messages: buildMessages(question, sources, history),
+    temperature: 0.2,
+  });
+  const answer = normalizeCitations(completion.choices[0]?.message?.content || '') || NO_CONTEXT_ANSWER;
+  return { answer, sources };
+};
+
+/**
+ * Streaming answer. Calls onSources once, then onToken for each text delta.
+ * @returns {Promise<{answer: string, sources: Array}>}
+ */
+const streamAnswer = async ({ userId, question, documentIds = [], history = [], signal, onSources, onToken }) => {
+  const sources = await retrieve(userId, question, documentIds);
+  onSources?.(sources);
+
+  const emitWhole = async (text) => {
+    // Stream canned text in small pieces so the UI behaves the same either way.
+    const parts = text.match(/\S+\s*/g) || [text];
+    for (const p of parts) {
+      if (signal?.aborted) break;
+      onToken?.(p);
+      await new Promise((r) => setTimeout(r, 12));
+    }
+    return text;
+  };
+
+  if (!sources.length) return { answer: await emitWhole(NO_CONTEXT_ANSWER), sources: [] };
+  if (!groq) return { answer: await emitWhole(extractiveAnswer(sources)), sources };
+
+  const stream = await createChatCompletion(
+    {
+      messages: buildMessages(question, sources, history),
+      temperature: 0.2,
+      stream: true,
+    },
+    { signal }
+  );
+
+  let answer = '';
+  try {
+    for await (const part of stream) {
+      const raw = part.choices[0]?.delta?.content;
+      if (raw) {
+        const delta = normalizeDelta(raw);
+        answer += delta;
+        onToken?.(delta);
+      }
+    }
+  } catch (err) {
+    if (!signal?.aborted) throw err;
+  }
+  return { answer: normalizeCitations(answer), sources };
+};
+
+/**
+ * Generates a short summary and starter questions for a freshly processed document.
+ * Returns null when no LLM is configured or the call fails — this is a nice-to-have.
+ */
+const generateDocumentInsights = async (fileName, text) => {
+  if (!groq) return null;
+  try {
+    const completion = await createChatCompletion({
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
       messages: [
         {
-          role: "user",
-          content: prompt
-        }
+          role: 'system',
+          content:
+            'You summarize documents. Reply with JSON only: {"summary": string (2-3 sentences, plain text), "questions": string[] (exactly 3 short, specific questions a reader could ask about this document)}.',
+        },
+        { role: 'user', content: `Document: "${fileName}"\n\n${text.slice(0, 8000)}` },
       ],
-      temperature: 0.2
     });
-
-    const answer = completion.choices[0]?.message?.content || "The uploaded documents do not contain this information.";
-
-    // 6. Return exact payload
+    const parsed = JSON.parse(completion.choices[0]?.message?.content || '{}');
     return {
-      answer: answer,
-      sources: sources
+      summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 800) : undefined,
+      suggestedQuestions: Array.isArray(parsed.questions)
+        ? parsed.questions.filter((q) => typeof q === 'string').slice(0, 3).map((q) => q.trim().slice(0, 160))
+        : undefined,
     };
-
-  } catch (error) {
-    console.error('Error in generateAnswer:', error);
-    
-    // Gracefully bubble Groq SDK errors as HTTP 500 generic catches
-    throw new Error(error.message || 'Failed to generate answer from Groq LLM.');
+  } catch (err) {
+    console.warn(`[rag] insights generation skipped: ${err.message}`);
+    return null;
   }
 };
 
 module.exports = {
+  normalizeCitations,
   retrieveRelevantChunks,
-  generateAnswer
+  generateAnswer,
+  streamAnswer,
+  generateDocumentInsights,
 };

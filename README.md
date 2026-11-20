@@ -1,162 +1,157 @@
 # DocQuery AI
 
-*AI-powered document question-answering system built with a state-of-the-art Retrieval Augmented Generation (RAG) architecture.*
+**Ask your documents anything.** Upload PDFs, Word files, text and Markdown — DocQuery finds the passages that matter and writes a clear, streamed answer with inline citations you can verify in one click.
 
-Upload your documents and ask questions. The AI intelligently retrieves relevant information directly from your documents and generates precise, context-aware answers.
-
----
-
-## Project Overview
-
-DocQuery AI transforms static documents into an interactive knowledge base. The platform allows users to upload standard format documents (PDF, DOCX, TXT) which are securely parsed, split into structural chunks, and converted into multi-dimensional vector embeddings. 
-
-When a user asks a question, the application uses its RAG architecture to perform a semantic vector search across their document library, retrieving the most highly relevant context chunks and injecting them into a strict LLM pipeline to generate accurate, hallucination-free answers.
-
-## Key Features
-
-- **Document Upload & Parsing**: Secure and efficient extraction of textual data from diverse file formats.
-- **Retrieval-Augmented Generation (RAG)**: Strict querying pipelines bounding the AI exclusively to the provided context.
-- **Vector Embeddings for Semantic Search**: High-dimensional content analysis matching semantic intent, not just keywords.
-- **Multi-Document Selection**: Target one, multiple, or all documents simultaneously for grouped intelligent querying.
-- **Chat-Based Interface**: A modern workspace utilizing markdown rendering and persistent conversation histories.
-- **User Authentication**: Complete JWT-based registration, login, and secure user data isolation.
-- **Asynchronous Processing**: Background pooling and staggered queues respecting AI tier rate limits to prevent freezing.
-- **Modern Dashboard UI**: A rich, dynamic React single-page application with responsive layouts and dark-mode designs.
+Built on a Retrieval-Augmented Generation (RAG) pipeline: local sentence embeddings for semantic search + Groq-hosted open models for fast, grounded answers.
 
 ---
 
-## Tech Stack
+## Highlights
 
-### Frontend
-- **React 19** / **Vite**
-- **Axios** (Data fetching)
-- **React Router** (Navigation)
-- **Lucide React** (Iconography)
-- **Vanilla CSS** (Component-scoped styling)
+- **Cited answers** — every claim links to the exact passage it came from (`[1]`, `[2]` chips → full source viewer).
+- **Real-time streaming** — answers stream token-by-token over Server-Sent Events, with a Stop button.
+- **Follow-up aware** — recent conversation turns are sent along so “what about contractors?” just works.
+- **Scope control** — ask across your whole library, one document, or any hand-picked set.
+- **AI summaries & suggested questions** — generated for every upload and shown on the dashboard and new-chat screen.
+- **Live processing progress** — real percentage while a document is chunked and embedded.
+- **Command palette** (`⌘K` / `Ctrl K`), drag-and-drop anywhere, light / dark / system themes, fully responsive.
+- **Zero-config local dev** — no MongoDB install needed; a local database starts automatically.
 
-### Backend
-- **Node.js** / **Express.js**
-- **MongoDB** / **Mongoose** (Relational & Vector Database)
-- **JWT** & **Bcrypt.js** (Authentication & Cryptography)
-- **Multer** (Multipart/form-data parsing)
+## Tech stack
 
-### AI Components
-- **Groq API** (For ultra-fast Answer Generation via `llama-3.1-8b-instant`)
-- **Xenova Transformers** (Local Vector Embeddings via `all-MiniLM-L6-v2`)
-- **Custom Text Chunking & Overlap Algorithms**
+| Layer | Tech |
+| --- | --- |
+| Frontend | React 19, Vite 7, **Tailwind CSS v4**, **shadcn/ui-style components on Radix UI**, Motion, Sonner, cmdk, Lucide, Geist font |
+| Backend | Node.js, Express 5, Mongoose 9, JWT + bcrypt, Multer, Helmet, express-rate-limit |
+| AI | `Xenova/all-MiniLM-L6-v2` embeddings (runs locally on the server), Groq `openai/gpt-oss-120b` for generation (automatic fallback if a model is retired) |
+| Search | MongoDB Atlas `$vectorSearch` when available, automatic fallback to in-app cosine similarity |
 
----
+## Quick start
 
-## Architecture Overview
+Requires **Node.js 20+**.
 
-The system strictly follows an advanced Retrieval-Augmented Generation workflow to ensure data privacy and accuracy:
+```bash
+git clone https://github.com/SOHAIL-IQB/DocQuery.git
+cd DocQuery
+npm run setup        # installs root, backend and frontend dependencies
+cp backend/.env.example backend/.env
+npm run dev          # starts API on :5001 and web app on :5173
+```
 
-1. **User uploads document**
-2. **↓ Text extraction** executes via `pdf-parse` or `mammoth` based on MIME type.
-3. **↓ Text chunking** splits data into 500-700 character boundaries with a 100 character overlap.
-4. **↓ Embedding generation** translates chunks into dense floating-point vector arrays.
-5. **↓ Vector storage** writes vectors to **MongoDB** mapped back to their parent Document IDs.
-6. **↓ User asks a question** via the application workspace.
-7. **↓ Vector search retrieves relevant chunks** comparing query intent against stored vectors.
-8. **↓ Groq LLM generates the final answer** synthesizing the retrieved local components.
+Open http://localhost:5173.
 
----
+With no `MONGO_URI` set, the backend starts a local MongoDB automatically (first run downloads it, ~80 MB) and stores data in `backend/.data/`.
 
-## Project Structure
+### Turn on AI answers
+
+Add a free Groq key to `backend/.env` (on the same line as the variable name):
+
+```env
+GROQ_API_KEY=gsk_...
+```
+
+Without a key the app still works end-to-end, but answers show the most relevant passages instead of an AI-written response.
+
+### Environment variables (`backend/.env`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `5001` | API port |
+| `MONGO_URI` | *(empty → local DB)* | MongoDB connection string. **Required in production.** |
+| `JWT_SECRET` | dev secret | **Required in production.** Long random string. |
+| `GROQ_API_KEY` | — | Enables AI-written answers, summaries and suggested questions |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Any Groq chat model. If it is retired, the app falls back to `gpt-oss-120b` → `gpt-oss-20b` → `qwen3.8-27b`. |
+| `VECTOR_SEARCH` | `auto` | `auto`, `atlas` or `local` |
+| `CLIENT_URLS` | — | Extra comma-separated origins allowed by CORS |
+
+Frontend: `VITE_API_BASE_URL` (defaults to `/api` in development, proxied to the backend).
+
+### Atlas vector index (optional, for large libraries)
+
+Create a Vector Search index named `vector_index` on the `documentchunks` collection:
+
+```json
+{
+  "fields": [
+    { "type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine" },
+    { "type": "filter", "path": "userId" }
+  ]
+}
+```
+
+If the index is missing, search falls back to in-app cosine similarity automatically.
+
+## How it works
+
+1. **Upload** — file is validated (type, 10 MB/file, 50 MB & 20 docs per user) and saved; the API responds immediately.
+2. **Extract** — text is pulled from PDF (`pdf-parse`), DOCX (`mammoth`), TXT or Markdown.
+3. **Chunk** — split into ~1,000-character passages on paragraph/sentence boundaries with 200 characters of overlap.
+4. **Embed** — passages are embedded in batches with MiniLM (384-d, normalized) and stored with their document.
+5. **Summarize** — the LLM writes a short summary and three starter questions.
+6. **Ask** — the question is embedded, the top passages are retrieved (max 4 per document for diversity), and the LLM answers using only those numbered excerpts, citing them inline. The response streams back over SSE.
+
+## API
+
+| Method | Route | Description |
+| --- | --- | --- |
+| POST | `/api/auth/register` · `/api/auth/login` | Create account / sign in |
+| GET | `/api/auth/me` | Current user |
+| GET · POST | `/api/documents` · `/api/documents/upload` | List / upload documents |
+| GET · PATCH · DELETE | `/api/documents/:id` · `/:id/rename` · `/:id` | Read / rename / delete |
+| GET · POST | `/api/chat` · `/api/chat/create` | List / create conversations |
+| POST | `/api/chat/message/stream` | Ask a question (Server-Sent Events) |
+| POST | `/api/chat/message` | Ask a question (single JSON response) |
+| GET · PATCH · DELETE | `/api/chat/:id` · `/:id/rename` · `/:id` | History / rename / delete |
+| GET | `/api/users/analytics` | Dashboard stats |
+| PATCH · POST · DELETE | `/api/users/profile` · `/change-password` · `/account` | Account management |
+
+## Project structure
 
 ```text
 backend/
-├── config/           # Database and environment configurations
-├── controllers/      # Route logic and request handling
-├── middleware/       # Authentication and file validation layers
-├── models/           # Mongoose schemas (User, Document, Message, etc.)
-├── routes/           # RESTful API endpoint definitions
-├── services/         # Core business logic (RAG pipeline)
-└── utils/            # Helper functions (extration, chunking, gemini API)
+├── config/        # DB connection (Atlas or auto-started local MongoDB)
+├── controllers/   # auth, documents (background processing), chat (SSE), users
+├── middleware/    # auth, uploads & quotas, rate limits, error handling
+├── models/        # User, Document, DocumentChunk, Chat, Message
+├── routes/
+├── services/      # ragService — retrieval, prompting, streaming, summaries
+└── utils/         # embeddings, chunking, text extraction, Groq client
 
-frontend/
-└── src/
-    ├── assets/       # Static branding and images
-    ├── components/   # Reusable UI elements (layout, documents, common)
-    ├── context/      # React functional state managers (AuthContext)
-    ├── hooks/        # Custom React hooks (useChat)
-    ├── pages/        # View-level route components (Dashboard, Settings, etc.)
-    └── services/     # Frontend API interceptors
+frontend/src/
+├── components/
+│   ├── ui/        # shadcn-style primitives (button, dialog, dropdown, command…)
+│   ├── layout/    # app shell, sidebar, command palette, route guards
+│   ├── chat/      # message, markdown + citations, composer, scope picker
+│   └── documents/ # document cards, upload dropzone
+├── context/       # auth, theme, workspace (documents + chats)
+├── lib/           # API client (axios + SSE stream), utils
+└── pages/         # Landing, Auth, Dashboard, Chat, Settings
 ```
 
----
+## Testing
 
-## Installation Guide
-
-Follow these steps to spin up the DocQuery AI application locally.
-
-### 1. Clone the repository
 ```bash
-git clone https://github.com/SOHAIL-IQB/DocQuerry.git
-cd DocQuerry
+npm test
 ```
 
-### 2. Install Backend Dependencies
-```bash
-cd backend
-npm install
-```
+Runs 58 backend tests (Node's built-in test runner) against the real Express app, an in-memory MongoDB and the real embedding model — no network or API key needed. They cover:
 
-### 3. Install Frontend Dependencies
-```bash
-cd ../frontend
-npm install
-```
+- **Auth** — validation, duplicate/racing sign-ups, case-insensitive login, expired/forged tokens, brute-force limiting
+- **Documents** — real PDF/DOCX/TXT/MD extraction, non-ASCII names, type/size/count/storage limits, isolation between users, cleanup when deleted mid-processing
+- **Chat** — SSE event order, persistence, scoping, cross-user isolation, greetings, stop/abort, rate limiting
+- **Accounts** — analytics, profile, password change, full cascade on account deletion
+- **Units** — chunking, text extraction (including a regression test for PDF parsing during model load), citation normalization
 
-### 4. Create Environment Variables
-Navigate to the `backend` directory and duplicate the `.env.example` file to create a `.env` file:
-```bash
-cd backend
-cp .env.example .env
-```
-Populate your new `.env` file with the required production constraints:
-```env
-PORT=5000
-NODE_ENV=development
-MONGO_URI=your_mongodb_atlas_connection_string
-JWT_SECRET=a_secure_randomly_generated_string
-GROQ_API_KEY=your_groq_api_key
-```
+## Scripts
 
-### 5. Start the Application Environment
-In the `backend` terminal:
-```bash
-npm run dev
-```
-
-Open a new terminal session, navigate to the `frontend` directory, and start the client:
-```bash
-cd frontend
-npm run dev
-```
-
-*(By default, the Vite client will be accessible at `http://localhost:5173`)*
-
----
-
-## Usage
-
-1. **Register or Login**: Create a new account from the landing screen to generate your private workspace.
-2. **Upload Documents**: Navigate to the Dashboard and drag-and-drop your reference materials to begin ingestion.
-3. **Wait for Processing**: The backend will process your documents asynchronously in the background. Wait until their status changes to "Ready".
-4. **Select Context**: In the Chat interface, use the dropdown filter to explicitly target an individual document, multiple documents, or your entire library at once.
-5. **Ask Questions**: Send queries directly to the AI, and it will respond with precise, contextual answers synthesized distinctly from your targeted materials.
-
----
-
-## Future Improvements
-
-- **Streaming Responses**: Implement true chunk-by-chunk HTTP response streaming for real-time text generation effects.
-- **Improved Document Summarization**: Expand the inference pipeline to summarize freshly uploaded documents for immediate metadata tagging.
-- **Better Retrieval Ranking**: Implement cross-encoder reranking algorithms after the initial vector sweep to increase retrieval precision.
-- **Advanced Analytics Dashboard**: Expose token-usage and generation timing metrics natively within the user dashboard.
-
----
+| Command | What it does |
+| --- | --- |
+| `npm run setup` | Install all dependencies |
+| `npm run dev` | Run API and web app together |
+| `npm run build` | Production build of the frontend |
+| `npm test` | Run the backend test suite |
+| `npm run lint` | Lint the frontend |
+| `npm start` | Start the API in production mode |
 
 ## Author
 
@@ -164,4 +159,4 @@ npm run dev
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).

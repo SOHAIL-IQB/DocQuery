@@ -1,79 +1,69 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import api from '@/lib/api'
 
-const AuthContext = createContext();
+const AuthContext = createContext(null)
 
-export const useAuth = () => {
-  return useContext(AuthContext);
-};
+const readStoredUser = () => {
+  try {
+    const token = localStorage.getItem('token')
+    const user = localStorage.getItem('user')
+    return token && user ? JSON.parse(user) : null
+  } catch {
+    return null
+  }
+}
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(readStoredUser)
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'))
 
-  // Validate Token on Mount
   useEffect(() => {
-    const checkAuthStatus = async () => {
-      const token = localStorage.getItem('token');
-      const storedUser = localStorage.getItem('user');
+    const token = localStorage.getItem('token')
+    if (!token) return
 
-      // Hydrate state synchronously to persist UI
-      if (token && storedUser) {
-        setUser(JSON.parse(storedUser));
-      }
+    api
+      .get('/auth/me')
+      .then(({ data }) => {
+        setUser(data.data)
+        localStorage.setItem('user', JSON.stringify(data.data))
+      })
+      .catch((err) => {
+        // Only drop the session on an auth failure — not when the server is briefly unreachable.
+        if (err.response?.status === 401) setUser(null)
+      })
+      .finally(() => setLoading(false))
+  }, [])
 
-      if (!token) {
-        setLoading(false);
-        return;
-      }
+  useEffect(() => {
+    const onUnauthorized = () => setUser(null)
+    window.addEventListener('auth:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('auth:unauthorized', onUnauthorized)
+  }, [])
 
-      try {
-        const { data } = await api.get('/auth/me');
-        if (data.success) {
-          setUser(data.data); // Store DB user object
-          localStorage.setItem('user', JSON.stringify(data.data)); // keep in sync
-        } else {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-        }
-      } catch (error) {
-        console.error('Session validation failed:', error);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-      } finally {
-        setLoading(false);
-      }
-    };
+  const login = useCallback((token, userData) => {
+    const { token: _t, ...profile } = userData
+    localStorage.setItem('token', token)
+    localStorage.setItem('user', JSON.stringify(profile))
+    setUser(profile)
+  }, [])
 
-    checkAuthStatus();
+  const updateUser = useCallback((profile) => {
+    localStorage.setItem('user', JSON.stringify(profile))
+    setUser(profile)
+  }, [])
 
-    // Listen for 401 interceptor events
-    const handleUnauthorized = () => {
-      setUser(null);
-    };
-    window.addEventListener('auth:unauthorized', handleUnauthorized);
-    
-    return () => {
-      window.removeEventListener('auth:unauthorized', handleUnauthorized);
-    };
-  }, []);
-
-  const login = (token, userData) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(userData));
-    setUser(userData);
-  };
-
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
-    window.location.href = '/login';
-  };
+  const logout = useCallback(() => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    setUser(null)
+  }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
-  );
-};
+  )
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export const useAuth = () => useContext(AuthContext)
