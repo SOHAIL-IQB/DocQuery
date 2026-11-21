@@ -111,6 +111,13 @@ describe('chat', () => {
     assert.equal((await api('POST', '/chat/message/stream', { token: alice.token, body: { chatId, question: '   ' } })).status, 400);
     assert.equal((await api('POST', '/chat/message/stream', { token: alice.token, body: { chatId, question: 'x'.repeat(4001) } })).status, 400);
     assert.equal((await api('POST', '/chat/message/stream', { token: alice.token, body: { chatId: 'nope', question: 'hi' } })).status, 404);
+    assert.equal((await api('POST', '/chat/message', { token: alice.token, body: { chatId: 'aaaaaaaaaaaa', question: 'hi' } })).status, 404);
+    assert.equal((await api('POST', '/chat/message', { token: alice.token, body: { chatId: { $ne: null }, question: 'hi' } })).status, 404);
+    for (const [method, url] of [['GET', '/chat/aaaaaaaaaaaa'], ['PATCH', '/chat/not-an-id/rename'], ['DELETE', '/chat/not-an-id']]) {
+      const res = await api(method, url, { token: alice.token, ...(method === 'PATCH' ? { body: { title: 'x' } } : {}) });
+      assert.equal(res.status, 404, `${method} ${url}`);
+      assert.equal(res.body.error, 'Chat not found');
+    }
     assert.equal((await api('POST', '/chat/message/stream', { token: alice.token })).status, 400);
     assert.equal((await api('POST', '/chat/message/stream', { body: { chatId, question: 'hi' } })).status, 401);
   });

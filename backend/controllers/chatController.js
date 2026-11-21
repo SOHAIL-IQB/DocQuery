@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const { generateAnswer, streamAnswer } = require('../services/ragService');
@@ -15,12 +14,11 @@ const greetingAnswer = (user) => {
   return `Hi${name}! I'm your **DocQuery** assistant.\n\nUpload PDFs, Word documents, or text files and ask me anything about them — I'll answer using only what's inside your documents and cite the exact passages I used.\n\nWhat would you like to know?`;
 };
 
-/** Loads a chat and verifies ownership. Sends the error response itself and returns null on failure. */
+/**
+ * Loads a chat and verifies ownership. Sends the error response itself and returns null on failure.
+ * The id's format is already checked by middleware/validateObjectId on every chat route.
+ */
 const loadOwnedChat = async (req, res, chatId) => {
-  if (!mongoose.Types.ObjectId.isValid(chatId)) {
-    res.status(404).json({ success: false, error: 'Chat not found' });
-    return null;
-  }
   const chat = await Chat.findById(chatId);
   if (!chat) {
     res.status(404).json({ success: false, error: 'Chat not found' });
