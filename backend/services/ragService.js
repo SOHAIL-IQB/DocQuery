@@ -1,7 +1,7 @@
-const mongoose = require('mongoose');
 const DocumentChunk = require('../models/DocumentChunk');
 const Document = require('../models/Document');
 const { generateEmbedding } = require('../utils/embeddings');
+const { isObjectId, toObjectId } = require('../utils/objectId');
 const { groq, createChatCompletion } = require('../utils/groq');
 
 const TOP_K = 6;               // chunks sent to the LLM
@@ -15,7 +15,6 @@ const HISTORY_TURNS = 6;       // previous messages included for follow-up quest
 const VECTOR_SEARCH_MODE = (process.env.VECTOR_SEARCH || 'auto').toLowerCase();
 let atlasAvailable = VECTOR_SEARCH_MODE !== 'local';
 
-const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
 
 /** Keeps the top N chunks per document, then the global top K. */
 const diversify = (chunks, k = TOP_K) => {
@@ -82,7 +81,7 @@ const localSearch = async (userId, queryEmbedding, readyIds) => {
 const retrieveRelevantChunks = async (userId, queryEmbedding, documentIds = []) => {
   const filter = { userId: toObjectId(userId), status: 'Ready' };
   const requested = (Array.isArray(documentIds) ? documentIds : [])
-    .filter((id) => mongoose.Types.ObjectId.isValid(id));
+    .filter(isObjectId);
   if (requested.length) filter._id = { $in: requested.map(toObjectId) };
 
   const readyDocs = await Document.find(filter).select('_id fileName').lean();

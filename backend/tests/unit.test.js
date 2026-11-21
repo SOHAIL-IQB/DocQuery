@@ -98,3 +98,51 @@ describe('normalizeCitations', () => {
     assert.equal(normalizeCitations('See [docs](https://x.y) [2].'), 'See [docs](https://x.y) [2].');
   });
 });
+
+describe('ObjectId validation', () => {
+  const { isObjectId } = require('../utils/objectId');
+  const { validateObjectId } = require('../middleware/validateObjectId');
+
+  // Minimal Express stand-ins: records the status/body or whether next() ran.
+  const run = (mw, req) => {
+    const out = { status: null, body: null, next: false };
+    const res = {
+      status(code) { out.status = code; return this; },
+      json(body) { out.body = body; return this; },
+    };
+    mw(req, res, () => { out.next = true; });
+    return out;
+  };
+
+  it('accepts only real ObjectIds and 24-character hex strings', () => {
+    assert.equal(isObjectId('6afffc1639aae2068f561af5'), true);
+    for (const bad of ['not-an-id', 'aaaaaaaaaaaa', '', null, undefined, 123, {}, ['6afffc1639aae2068f561af5']]) {
+      assert.equal(isObjectId(bad), false, `${JSON.stringify(bad)} must be rejected`);
+    }
+  });
+
+  it('lets valid route params through and answers invalid ones with a 404 naming the resource', () => {
+    const mw = validateObjectId('id', { resource: 'Document' });
+    assert.equal(run(mw, { params: { id: '6afffc1639aae2068f561af5' } }).next, true);
+    const bad = run(mw, { params: { id: 'nope' } });
+    assert.equal(bad.next, false);
+    assert.equal(bad.status, 404);
+    assert.deepEqual(bad.body, { success: false, error: 'Document not found' });
+  });
+
+  it('leaves a missing body field to the controller so it can answer 400', () => {
+    const mw = validateObjectId('chatId', { source: 'body', resource: 'Chat' });
+    assert.equal(run(mw, { body: {} }).next, true);
+    assert.equal(run(mw, { body: { chatId: '' } }).next, true);
+    assert.equal(run(mw, { body: { chatId: 'nope' } }).status, 404);
+    assert.equal(run(mw, { body: { chatId: { $ne: null } } }).status, 404, 'operator objects must not reach the query');
+  });
+
+  it('keeps controllers free of direct mongoose imports', () => {
+    const dir = path.join(__dirname, '..', 'controllers');
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.js'))) {
+      const src = fs.readFileSync(path.join(dir, file), 'utf8');
+      assert.doesNotMatch(src, /require\(['"]mongoose['"]\)/, `${file} imports mongoose; validate IDs with middleware/validateObjectId instead`);
+    }
+  });
+});

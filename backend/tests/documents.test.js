@@ -106,6 +106,11 @@ describe('documents', () => {
     assert.equal((await api('PATCH', `/documents/${id}/rename`, { token: alice.token, body: { newName: '   ' } })).status, 400);
     assert.equal((await api('PATCH', '/documents/not-an-id/rename', { token: alice.token, body: { newName: 'x' } })).status, 404);
     assert.equal((await api('GET', '/documents/not-an-id', { token: alice.token })).status, 404);
+    for (const [method, url] of [['GET', '/documents/aaaaaaaaaaaa'], ['DELETE', '/documents/not-an-id']]) {
+      const res = await api(method, url, { token: alice.token });
+      assert.equal(res.status, 404, `${method} ${url}`);
+      assert.equal(res.body.error, 'Document not found');
+    }
   });
 
   it('deletes a document with its passages and frees storage', async () => {
