@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const Document = require('../models/Document');
 const User = require('../models/User');
 const DocumentChunk = require('../models/DocumentChunk');
@@ -121,7 +120,6 @@ const getDocuments = async (req, res, next) => {
 // @access  Private
 const getDocument = async (req, res, next) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return notFound(res);
     const document = await Document.findOne({ _id: req.params.id, userId: req.user._id }).lean();
     if (!document) return notFound(res);
     res.json({ success: true, data: document });
@@ -139,7 +137,6 @@ const renameDocument = async (req, res, next) => {
     if (!newName) {
       return res.status(400).json({ success: false, error: 'New name is required' });
     }
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return notFound(res);
 
     const document = await Document.findOneAndUpdate(
       { _id: req.params.id, userId: req.user._id },
@@ -159,7 +156,6 @@ const renameDocument = async (req, res, next) => {
 // @access  Private
 const deleteDocument = async (req, res, next) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return notFound(res);
     const document = await Document.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
     if (!document) return notFound(res);
 

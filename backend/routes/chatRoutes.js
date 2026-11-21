@@ -11,15 +11,19 @@ const {
 } = require('../controllers/chatController');
 const { protect } = require('../middleware/authMiddleware');
 const { chatLimiter } = require('../middleware/rateLimit');
+const { validateObjectId } = require('../middleware/validateObjectId');
+
+const chatIdParam = validateObjectId('chatId', { resource: 'Chat' });
+const chatIdBody = validateObjectId('chatId', { source: 'body', resource: 'Chat' });
 
 router.use(protect);
 
 router.get('/', getAllChats);
 router.post('/create', createChat);
-router.post('/message', chatLimiter, sendMessage);
-router.post('/message/stream', chatLimiter, streamMessage);
-router.get('/:chatId', getChatHistory);
-router.patch('/:chatId/rename', renameChat);
-router.delete('/:chatId', deleteChat);
+router.post('/message', chatLimiter, chatIdBody, sendMessage);
+router.post('/message/stream', chatLimiter, chatIdBody, streamMessage);
+router.get('/:chatId', chatIdParam, getChatHistory);
+router.patch('/:chatId/rename', chatIdParam, renameChat);
+router.delete('/:chatId', chatIdParam, deleteChat);
 
 module.exports = router;
