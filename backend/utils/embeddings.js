@@ -3,14 +3,16 @@ const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 let embedderPromise = null;
 
 /**
- * Loads the local @xenova/transformers embedding model once and caches it.
+ * Loads the local @huggingface/transformers embedding model once and caches it.
  * Safe to call many times — concurrent callers share the same load.
  */
 function initializeEmbedder() {
   if (!embedderPromise) {
     embedderPromise = (async () => {
-      const { pipeline } = await import('@xenova/transformers');
-      const embedder = await pipeline('feature-extraction', MODEL_ID);
+      const { pipeline } = await import('@huggingface/transformers');
+      // q8 is the quantized model the old @xenova/transformers used by default, so vectors
+      // already stored in the database stay comparable with new ones.
+      const embedder = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8' });
       console.log(`[embeddings] ${MODEL_ID} loaded`);
       return embedder;
     })().catch((err) => {
